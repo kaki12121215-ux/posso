@@ -452,3 +452,46 @@ label.srow{position:relative}
 .link.urg{color:var(--urg-txt)}
 .olv-todo{text-align:right;border-top:1px solid var(--line);margin-top:6px}
 @media (prefers-reduced-motion:reduce){.olv-card{transition:opacity .3s}.olv-card:not(.on){transform:none}}
+
+/* ---------- algo se está cargando ---------- */
+#carga{position:absolute;top:var(--st);left:0;right:0;height:3px;z-index:70;overflow:hidden;opacity:0;transition:opacity .3s;pointer-events:none}
+#carga.on{opacity:1}
+#carga i{position:absolute;top:0;bottom:0;width:45%;border-radius:2px;background:linear-gradient(90deg,var(--v-hoy),var(--v-semana),var(--v-algun),var(--v-olvidar));animation:carga 1.25s cubic-bezier(.45,0,.25,1) infinite}
+@keyframes carga{0%{transform:translateX(-100%)}100%{transform:translateX(230%)}}
+.afin{margin-right:auto;align-self:center;margin-left:12px;display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:16px;
+  font-size:12.5px;font-weight:600;color:var(--deep);background:var(--k-hoy);opacity:0;transform:translateY(-4px);transition:opacity .35s,transform .35s var(--ease),background-color .3s,color .3s}
+.afin.on{opacity:1;transform:none}
+.afin.ok{color:var(--deep)}
+.afin.err{background:var(--urg-bg);color:var(--urg-txt)}
+.afin.err button{font-size:12.5px;font-weight:700;color:var(--deep);padding:0 0 0 4px}
+.afin-dots{display:inline-flex;gap:3px}
+.afin-dots i{width:5px;height:5px;border-radius:50%;animation:punto 1.6s ease-in-out infinite both}
+.afin-dots i:nth-child(1){background:var(--v-hoy)}.afin-dots i:nth-child(2){background:var(--v-semana);animation-delay:.18s}
+.afin-dots i:nth-child(3){background:var(--v-algun);animation-delay:.36s}.afin-dots i:nth-child(4){background:var(--v-olvidar);animation-delay:.54s}
+.res-cards.provisional .rcard{animation:rise .45s var(--ease) calc(var(--i,0) * .1s) both,provisional 1.8s ease-in-out 1s infinite}
+@keyframes provisional{0%,100%{opacity:1}50%{opacity:.62}}
+@media (prefers-reduced-motion:reduce){#carga i{animation:none;width:100%;opacity:.6}.res-cards.provisional .rcard{animation:none;opacity:.75}}
+
+/* ---------- ordenando por detrás ---------- */
+.home-afin{position:absolute;left:50%;top:calc(var(--st) + 150px);margin:0;transform:translate(-50%,-4px);z-index:3;white-space:nowrap}
+.home-afin.on{transform:translate(-50%,0)}
+.task.prov .front{animation:provisional 1.8s ease-in-out infinite}
+@media (prefers-reduced-motion:reduce){.task.prov .front{animation:none;opacity:.75}}
+
+/* ---------- Tus cosas se desliza; acciones al mantener pulsado ---------- */
+#sh-cosas{display:flex;flex-direction:column}
+#sh-cosas .grab-zone{flex:none}
+#drawers{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-bottom:calc(150px + var(--sb));align-content:start}
+#sh-cosas .hechas-fila{position:absolute;left:16px;right:16px;bottom:calc(122px + var(--sb));width:auto;margin:0;z-index:4}
+.drawer .t{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.drawer{min-height:auto}
+.task .under.acciones{opacity:0;display:flex;justify-content:flex-end;align-items:stretch;background:none;transition:opacity .2s}
+.task.abierta .under.acciones{opacity:1}
+.task .under .act{width:92px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:#fff;font-size:12.5px;font-weight:600}
+.task .under .act.del{background:var(--urg)}
+.task .under .act.go{background:var(--c-hoy)}
+.task.abierta .front{box-shadow:6px 0 14px -10px rgba(0,0,0,.25)}
+
+.chip.nueva{border-style:dashed;color:var(--deep);cursor:pointer;transition:transform .15s,background-color .2s}
+.chip.nueva svg{fill:var(--deep)}
+.chip.nueva:active{transform:scale(.95)}

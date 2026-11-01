@@ -82,7 +82,11 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id' + Date.now().t
 const pad = n => String(n).padStart(2, '0');
 const isoDia = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
 const isoLocal = d => isoDia(d) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
-const deIso = s => { const [d, t] = s.split('T'); const [Y, M, D] = d.split('-').map(Number); const [h, m] = (t || '09:00').split(':').map(Number); return new Date(Y, M - 1, D, h, m); };
+const deIso = s => {
+  s = String(s || '');
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) { const [d, t] = s.split('T'); const [Y, M, D] = d.split('-').map(Number); const [h, m] = (t || '09:00').split(':').map(Number); return new Date(Y, M - 1, D, h || 0, m || 0); }
+  const x = new Date(s); return isNaN(x) ? new Date() : x;      // por si llega una fecha en otro formato
+};
 const hoyIso = () => isoDia(new Date());
 const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -128,8 +132,22 @@ function leerCodigo(codigo) {
   } catch (e) { return null; }
 }
 
+// Barra fina de colores arriba mientras se espera a tu Google (solo si tarda más de 0,4 s)
+let cargando = 0, cargaT = 0;
+function carga(d) {
+  cargando = Math.max(0, cargando + d);
+  const el = $('#carga'); if (!el) return;
+  clearTimeout(cargaT);
+  if (cargando) cargaT = setTimeout(() => el.classList.add('on'), 400);
+  else el.classList.remove('on');
+}
 async function api(accion, datos = {}, espera = 30000) {
   if (!S.cfg) throw new Error('sin-conexion');
+  const visible = !['pendientes', 'destino', 'listar', 'actualizar', 'marcarItem', 'borrar', 'restaurar', 'guardar', 'habituales', 'ajustes', 'carpetas'].includes(accion);
+  if (visible) carga(1);
+  try { return await apiYa(accion, datos, espera); } finally { if (visible) carga(-1); }
+}
+async function apiYa(accion, datos, espera) {
   const ctl = window.AbortController ? new AbortController() : null;
   const t = setTimeout(() => ctl && ctl.abort(), espera);
   let r;
@@ -169,8 +187,9 @@ async function sincronizar(traer = false) {
       const r = await api('listar');
       // lo que haya cambiado mientras tanto en el iPhone tiene prioridad
       if (!S.outbox.length) {
-        const cambia = JSON.stringify(r.ideas) !== JSON.stringify(S.ideas);
-        S.ideas = r.ideas; S.carpetas = r.carpetas; S.ajustes = Object.assign(S.ajustes, r.ajustes);
+        const prov = S.ideas.filter(i => i.provisional);
+        const cambia = JSON.stringify(r.ideas) !== JSON.stringify(S.ideas.filter(i => !i.provisional));
+        S.ideas = r.ideas.concat(prov); S.carpetas = r.carpetas; S.ajustes = Object.assign(S.ajustes, r.ajustes);
         if (r.habituales) S.habituales = r.habituales;
         persist();
         if (cambia) {
@@ -274,7 +293,7 @@ function pintarUR() {
 // 6 · TEXTOS DE FECHAS Y ETIQUETAS
 // =====================================================================
 function fechaCorta(aviso, largo) {
-  if (!aviso) return '';
+  if (!aviso || isNaN(deIso(aviso))) return '';
   const d = deIso(aviso), hoy = new Date(); hoy.setHours(0, 0, 0, 0);
   const dias = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - hoy) / DIA_MS);
   const hora = d.getHours() + ':' + pad(d.getMinutes());
@@ -328,6 +347,7 @@ function meta(i, modo) {
   if (i.repetir && !i.hecho) partes.push(`<span class="mtxt rep">${ICO2.rep}${esc(textoRepetir(i.repetir))}</span>`);
   if (i.limite && !i.hecho) partes.push(`<span class="mtxt">Entrega ${esc(fechaDia(i.limite))}</span>`);
   if (i.sumarA && modo === 'borrador') partes.push('<span class="mtxt">Se suma a tu lista</span>');
+  if (i.carpetaNueva && modo === 'borrador' && !i.carpeta) partes.push(`<button class="chip nueva" data-act="crear-carpeta" data-c="${esc(i.carpetaNueva)}">${ICO.folder}¿Carpeta nueva: ${esc(i.carpetaNueva)}?</button>`);
   if (modo === 'borrador') {
     if (i.aviso && !i.repetir && !i.limite) txt = 'te aviso ' + fechaCorta(i.aviso, true);
     else if (i.cat === 'olvidar') txt = 'en 7 días te pregunto si lo borramos';
@@ -597,8 +617,7 @@ function paneHTML(c) {
     ? `<div class="empty-state"><div class="gem" data-gem style="--s:min(200px,26vh);opacity:.9"></div><p>Si te ronda algo, toca la gema y cuéntamelo.</p></div>`
     : `<div class="items">${items.map(i => fila(i, c)).join('')}
       <div class="cheer">Una menos.</div>
-      ${c === 'hoy' && pend.length ? '<div class="list-note">Desliza a la izquierda para borrar.</div>' : ''}
-      ${c === 'olvidar' ? '<div class="list-note">Desliza una idea a la derecha si al final sí quieres hacerla.</div>' : ''}</div>`;
+      ${pend.length ? `<div class="list-note">Mantén pulsada una tarea para borrarla${c === 'olvidar' ? ' o pasarla a Hoy' : ''}. Desliza a los lados para cambiar de categoría.</div>` : ''}</div>`;
   const chips = grupos.length ? `<div class="grupos">${['', ...grupos].map(g =>
     `<button class="csel${g === filtro ? ' on' : ''}" data-act="grupo" data-v="${esc(g)}">${g ? esc(g) : 'Todos'}</button>`).join('')}</div>` : '';
   return head + chips + `<div class="scroll">${cuerpo}</div>`;
@@ -654,10 +673,8 @@ function encoger(e) {
 function fila(i, c) {
   c = c || S.cat;
   const olv = i.cat === 'olvidar';
-  const under = olv
-    ? `<div class="under go"><div class="act">${ICO.arrowR}Hacer</div></div><div class="under del"><div class="act">${ICO.trash}Borrar</div></div>`
-    : `<div class="under del"><div class="act">${ICO.trash}Borrar</div></div>`;
-  return `<div class="task${i.hecho ? ' done' : ''}${olv ? ' olv' : ''}" data-id="${i.id}">${under}
+  const under = `<div class="under acciones">${olv ? `<button class="act go" data-act="fila-hoy" data-id="${i.id}">${ICO.arrowR}A Hoy</button>` : ''}<button class="act del" data-act="fila-borrar" data-id="${i.id}">${ICO.trash}Borrar</button></div>`;
+  return `<div class="task${i.hecho ? ' done' : ''}${olv ? ' olv' : ''}${i.provisional ? ' prov' : ''}" data-id="${i.id}">${under}
     <div class="front"><button data-act="hecho" data-id="${i.id}" style="padding:0;align-self:flex-start" aria-label="Hecho">${check(olv ? 'olvidar' : c, i.hecho, 22)}</button>
     <div class="body" data-act="editar" data-id="${i.id}"><div class="t">${tituloHTML(i)}</div>${i.hecho ? '' : meta(i, 'lista')}
       ${(i.fotos || []).length && !i.hecho ? `<div class="thumbs sm">${i.fotos.map(f => `<span class="thumb" style="background-image:url(${f.mini})"></span>`).join('')}</div>` : ''}</div></div>
@@ -684,6 +701,7 @@ function flip(cont, antes) {
 let deslizando = false;
 async function irACat(nueva, desdeDx = 0, vel = 0) {
   if (deslizando) return;
+  filaAbierta = null;
   const k0 = CATS.indexOf(S.cat), k1 = CATS.indexOf(nueva);
   if (k1 === k0 || k1 < 0) return;
   const dir = k1 > k0 ? 1 : -1;
@@ -929,6 +947,8 @@ function pintarAjustes() {
     <div class="aj-note" style="padding:8px 32px 0">Pon la etiqueta «Posso» a un correo y en unos minutos aparece como tarea, con un título claro y el enlace al correo.</div>
     <div class="aj-h">Voz y cuenta</div>
     <div class="card">
+      ${tg('revisar', !S.local.sinRevisar, 'Ver el resultado antes de guardar')}
+      <div class="aj-note" style="padding:2px 16px 12px">${!S.local.sinRevisar ? 'Al tocar el ✓ ves el resultado. Si guardas antes de que Gemini acabe, lo ordena después por su cuenta.' : 'Al tocar el ✓ se guarda al momento y Gemini lo ordena por detrás. Te aviso cuando esté.'}</div>
       <div class="arow"><span>Versión</span><span class="v">${NOMBRE_VARIANTE}</span></div>
       <div class="aj-note" style="padding:2px 16px 12px">${VARIANTE === 'audio' ? 'Solo se graba el audio y Gemini lo transcribe: sin sonido del micrófono, unos segundos más lenta.' : 'El dictado del iPhone escribe mientras hablas: más rápida, pero suena el micrófono de Apple al empezar y al acabar.'}</div>
       ${row('cuenta', 'Cuenta de Google', S.cfg ? 'conectada' : 'modo prueba')}
@@ -1149,31 +1169,69 @@ async function procesarRapido(entrada) {
   const n = ++afinadoN;
   S.borrador = { ideas: local.map(i => Object.assign({ frase: '', carpeta: '', aviso: '', urgente: false }, i)), transcripcion: entrada.texto, provisional: true };
   H.borrador = { past: [], fut: [] };
-  ir('s-res', 'fade', { sinPila: true });
-  marcaAfinando(true);
+  if (actual && actual.id === 's-res') pintarResultado(); else ir('s-res', 'fade', { sinPila: true });
+  marcaAfinando('on');
+  $('#res-cards').classList.add('provisional');
   try {
-    const r = await api('procesar', { texto: entrada.texto }, 60000);
+    const r = await api('procesar', { texto: entrada.texto }, 45000);
+    const relevo = RELEVO[n];
+    if (relevo) {            // ya habías guardado: ahora se ordena de verdad
+      delete RELEVO[n];
+      quitarProvisionales(relevo);
+      const { op } = opDeIdeas(r.ideas && r.ideas.length ? r.ideas : relevo.provisionales.map(p => Object.assign({}, p)), 'voz');
+      hacer(op); terminarFondo(relevo); pintarTodo(true);
+      if (r.ideas && r.ideas.length) toast('Ordenado: ' + (resumen(r.ideas) || '').replace(/^./, c => c.toLowerCase()), 'Ver', () => abrirCosas());
+      return;
+    }
     const b = S.borrador;
     // solo se sustituye si sigues en el resultado y no has tocado nada
     if (n === afinadoN && b && b.provisional && !H.borrador.past.length && r.ideas && r.ideas.length) {
       S.borrador = { ideas: r.ideas.map(i => Object.assign({ frase: '', carpeta: '', aviso: '', urgente: false }, i)), transcripcion: r.transcripcion };
+      $('#res-cards').classList.remove('provisional');
       if (actual && actual.id === 's-res') pintarResultado();
     }
-  } catch (e) {}
-  if (n === afinadoN) { marcaAfinando(false); if (S.borrador) S.borrador.provisional = false; }
-}
-function marcaAfinando(on) {
-  let el = $('#afinando');
-  if (!el) {
-    el = document.createElement('div'); el.id = 'afinando';
-    el.style.cssText = 'margin-right:auto;align-self:center;padding-left:12px;font-size:12.5px;font-weight:600;color:var(--ink3);display:flex;align-items:center;gap:6px;transition:opacity .4s';
-    el.innerHTML = '<span class="rec-dot"></span>Afinando…';
-    $('#s-res .res-top').prepend(el);
+    if (n === afinadoN) marcaAfinando(H.borrador.past.length ? 'off' : 'ok');
+  } catch (e) {
+    const relevo = RELEVO[n];
+    if (relevo) {            // Gemini no ha respondido: se queda lo que guardaste
+      delete RELEVO[n];
+      const quedan = relevo.provisionales.filter(p => buscar(p.id));
+      quitarProvisionales(relevo);
+      const { op } = opDeIdeas(quedan.map(p => Object.assign({}, p)), 'voz');
+      hacer(op); terminarFondo(relevo); pintarTodo(true);
+      toast('Gemini no ha respondido. Se queda como lo guardaste.');
+      return;
+    }
+    if (n === afinadoN) marcaAfinando('error', String(e.message || e).replace(/^Error:\s*/, ''));
   }
-  el.style.opacity = on ? 1 : 0;
+  if (n === afinadoN) { $('#res-cards').classList.remove('provisional'); if (S.borrador) S.borrador.provisional = false; }
+}
+/** Aviso arriba en el resultado: on (con segundos), ok (afinado), error (con Reintentar), off */
+let afinT = 0;
+function marcaAfinando(estado, msg) {
+  let el = $('#afinando');
+  if (!el) { el = document.createElement('div'); el.id = 'afinando'; $('#s-res .res-top').prepend(el); }
+  clearInterval(afinT);
+  if (estado === 'on') {
+    const t0 = Date.now();
+    el.className = 'afin on';
+    el.innerHTML = '<span class="afin-dots"><i></i><i></i><i></i><i></i></span><span id="afin-t">Afinando con Gemini…</span>';
+    afinT = setInterval(() => {
+      const s = Math.round((Date.now() - t0) / 1000), t = $('#afin-t');
+      if (t && s >= 3) t.textContent = s < 15 ? `Afinando con Gemini · ${s} s` : `Sigue afinando · ${s} s`;
+    }, 1000);
+  } else if (estado === 'ok') {
+    el.className = 'afin on ok';
+    el.innerHTML = '<svg width="13" height="10" viewBox="0 0 13 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 5.2l3.3 3.3L11.5 1.8"/></svg>Afinado';
+    setTimeout(() => el.classList.remove('on'), 1600);
+  } else if (estado === 'error') {
+    el.className = 'afin on err';
+    el.innerHTML = `<span>Sin afinar${msg ? ' · ' + esc(/tardando|Load failed|fetch/i.test(msg) ? 'sin respuesta' : msg.slice(0, 40)) : ''}</span><button data-act="reintentar">Reintentar</button>`;
+  } else el.classList.remove('on');
 }
 
 async function procesar(entrada) {
+  if (S.cfg && S.local.sinRevisar) return procesarFondo(entrada);    // opción: guardar ya sin ver el resultado
   if (S.cfg && entrada.texto) return procesarRapido(entrada);
   return procesarLento(entrada);
 }
@@ -1262,12 +1320,11 @@ function borradorUR(dir) {
   a.push(JSON.stringify(S.borrador.ideas)); S.borrador.ideas = JSON.parse(de.pop());
   vib(); pintarResultado();
 }
-function guardarBorrador() {
-  const b = S.borrador; if (!b) return;
-  afinadoN++; marcaAfinando(false);
+/** Convierte ideas ordenadas en cambios: crea las nuevas y suma a las listas que ya tienes. Devuelve la operación (para deshacer). */
+function opDeIdeas(ideas, origen) {
   const ahora = Date.now();
   const nuevas = [], ops = [];
-  b.ideas.forEach((i, k) => {
+  ideas.forEach((i, k) => {
     const destino = i.sumarA && buscar(i.sumarA);
     if (destino) {   // se suma a una lista que ya tienes
       const items = (destino.items || []).map(x => Object.assign({}, x));
@@ -1278,17 +1335,106 @@ function guardarBorrador() {
       ops.push(OP.cambiar(destino.id, { items, hecho: false }));
       return;
     }
-    const o = Object.assign({}, i, { id: uid(), creado: ahora + k, orden: ahora + k, hecho: false, hechoEn: 0, origen: i.origen || (S.entrada && S.entrada.imagen ? 'foto' : 'voz') });
-    delete o._rid; delete o.sumarA;
+    const o = Object.assign({}, i, { id: uid(), creado: ahora + k, orden: ahora + k, hecho: false, hechoEn: 0, origen: i.origen || origen || 'voz' });
+    delete o._rid; delete o.sumarA; delete o.provisional; delete o.carpetaNueva;
     if (o.items) o.items = o.items.map(x => ({ id: x.id || uid(), t: x.t, hecho: false, zona: x.zona }));
     nuevas.push(o);
   });
   if (nuevas.length) ops.push(OP.crear(nuevas));
-  hacer({ do: () => ops.forEach(o => o.do()), undo: () => ops.slice().reverse().forEach(o => o.undo()) });
+  return { nuevas, op: { do: () => ops.forEach(o => o.do()), undo: () => ops.slice().reverse().forEach(o => o.undo()) } };
+}
+const RELEVO = {};      // guardados antes de que Gemini acabara, a la espera de su orden
+function guardarBorrador() {
+  const b = S.borrador; if (!b) return;
+  if (b.provisional && !H.borrador.past.length && S.cfg) {
+    // Gemini aún está afinando y no has tocado nada: se guarda ya (provisional) y se reorganiza cuando responda
+    const ahora = Date.now(), trabajo = { id: uid(), provisionales: [] };
+    trabajo.provisionales = b.ideas.map((i, k) => Object.assign({}, i, { id: 'p-' + uid(), creado: ahora + k, orden: ahora + k, hecho: false, hechoEn: 0, provisional: trabajo.id, origen: 'voz' }));
+    trabajo.provisionales.forEach(i => { delete i._rid; S.ideas.push(i); });
+    persist();
+    RELEVO[afinadoN] = trabajo; FONDO.push(trabajo);
+    marcaAfinando('off');
+    S.borrador = null; S.entrada = null;
+    irInicio('drop'); pintarFondo();
+    setTimeout(() => toast('Guardado. Lo termino de ordenar y te aviso.'), 450);
+    return;
+  }
+  afinadoN++; marcaAfinando('off');
+  const { nuevas, op } = opDeIdeas(b.ideas, S.entrada && S.entrada.imagen ? 'foto' : 'voz');
+  hacer(op);
   S.borrador = null; S.entrada = null;
   irInicio('drop');
   const nHoy = nuevas.filter(i => i.cat === 'hoy').length;
   setTimeout(() => toast(nHoy ? 'Guardado. Ya no tienes que acordarte.' : 'Guardado. Cada cosa en su sitio.'), 450);
+}
+
+// ---------- Guardar al momento y ordenar por detrás ----------
+// Al tocar el ✓ vuelves al inicio enseguida. Si el iPhone ya tiene el texto, se guarda un primer orden provisional
+// (solo en el iPhone); cuando Gemini responde, se cambia por el bueno. Nada de esperar en ninguna pantalla.
+const FONDO = [];        // trabajos en marcha
+async function procesarFondo(entrada) {
+  const trabajo = { id: uid(), entrada, provisionales: [] };
+  FONDO.push(trabajo);
+  if (entrada.texto) {
+    const ahora = Date.now();
+    trabajo.provisionales = ordenarAqui(entrada.texto).map((i, k) => Object.assign({ frase: '', carpeta: '', aviso: '', urgente: false }, i,
+      { id: 'p-' + uid(), creado: ahora + k, orden: ahora + k, hecho: false, hechoEn: 0, provisional: trabajo.id, origen: 'voz' }));
+    trabajo.provisionales.forEach(i => S.ideas.push(i));
+    persist();
+  }
+  irInicio('drop');
+  pintarFondo();
+  try {
+    const datos = {};
+    if (entrada.imagen) { datos.imagen = entrada.imagen; datos.imagenMime = 'image/jpeg'; }
+    else if (entrada.texto) datos.texto = entrada.texto;
+    else {
+      const wav = await Promise.race([aWav(entrada.blob).catch(() => null), wait(8000).then(() => null)]);
+      datos.audio = await aBase64(wav || entrada.blob);
+      datos.mime = wav ? 'audio/wav' : (entrada.blob.type || 'audio/mp4').split(';')[0];
+    }
+    const r = await api('procesar', datos, 100000);
+    if (!r.ideas || !r.ideas.length) throw new Error('No he encontrado ninguna idea.');
+    quitarProvisionales(trabajo);
+    const { nuevas, op } = opDeIdeas(r.ideas, entrada.imagen ? 'foto' : 'voz');
+    hacer(op);
+    terminarFondo(trabajo);
+    pintarTodo(true);
+    toast('Ordenado: ' + (resumen(r.ideas) || nuevas.length + ' ideas.').replace(/^./, c => c.toLowerCase()), 'Ver', () => abrirCosas());
+  } catch (e) {
+    const msg = String(e.message || e).replace(/^Error:\s*/, '');
+    if (trabajo.provisionales.length) {
+      // Gemini no ha respondido: se queda el primer orden, y ahora sí se guarda en tu Google
+      const quedan = trabajo.provisionales.filter(p => buscar(p.id));
+      quitarProvisionales(trabajo);
+      const { op } = opDeIdeas(quedan.map(p => Object.assign({}, p)), 'voz');
+      hacer(op);
+      terminarFondo(trabajo);
+      pintarTodo(true);
+      toast('Gemini no ha respondido. Lo he guardado tal cual.');
+    } else {
+      terminarFondo(trabajo);
+      S.entrada = entrada;
+      toast(/tardando|Load failed|fetch/i.test(msg) ? 'No he podido ordenarlo: sin conexión.' : 'No he podido ordenarlo.', 'Reintentar', () => procesar(entrada));
+    }
+  }
+}
+function quitarProvisionales(trabajo) {
+  const ids = new Set(trabajo.provisionales.map(p => p.id));
+  S.ideas = S.ideas.filter(i => !ids.has(i.id));
+  persist();
+}
+function terminarFondo(trabajo) {
+  const k = FONDO.indexOf(trabajo); if (k >= 0) FONDO.splice(k, 1);
+  pintarFondo();
+}
+/** Pastilla en el inicio mientras hay algo ordenándose por detrás */
+function pintarFondo() {
+  const el = $('#home-afin'); if (!el) return;
+  if (FONDO.length) {
+    el.innerHTML = '<span class="afin-dots"><i></i><i></i><i></i><i></i></span>' + (FONDO.length > 1 ? `Ordenando ${FONDO.length} cosas…` : 'Ordenando…');
+    el.classList.add('on');
+  } else el.classList.remove('on');
 }
 
 // ---------- Ordenar sin Gemini (modo prueba) ----------
@@ -1427,7 +1573,14 @@ const ACT = {
   'voz-a-texto': () => vozATexto(),
   'ordenar-texto': () => { const t = $('#writebox').value.trim(); if (t) { $('#writebox').blur(); procesar({ texto: t }); } },
   'error-escribir': () => abrirEscribir((S.entrada && (S.entrada.texto || S.entrada.textoVivo)) || ''),
-  reintentar: () => { if (S.entrada) procesar(S.entrada); else irInicio(); },
+  reintentar: () => {
+    // si Gemini aún está afinando, no se empieza otra vez: se espera a su respuesta
+    if (actual && actual.id === 's-res' && S.borrador && S.borrador.provisional && $('#afinando') && $('#afinando').classList.contains('on') && !$('#afinando').classList.contains('err')) {
+      const p = $('#afinando'); p.animate([{ transform: 'scale(1)' }, { transform: 'scale(1.06)' }, { transform: 'scale(1)' }], { duration: 380, easing: 'ease-out' });
+      return toast('Ya lo estoy ordenando. Un momento.');
+    }
+    if (S.entrada) procesar(S.entrada); else irInicio();
+  },
   guardar: () => guardarBorrador(),
   descartar: () => { afinadoN++; marcaAfinando(false); S.borrador = null; S.entrada = null; irInicio(); toast('Descartado.'); },
   tema: el => { $$('#aj-body .seg button').forEach(b => b.classList.toggle('on', b === el)); S.local.tema = el.dataset.v; persist(); aplicarTema(true); },
@@ -1485,6 +1638,18 @@ const ACT = {
   },
   'perm-avisos': async () => { await activarAvisos(); pintarPermisos(); },
   // nuevo
+  'crear-carpeta': (el, e) => {
+    e.stopPropagation();
+    const c = el.dataset.c, b = S.borrador; if (!b) return;
+    if (S.carpetas.length >= 8) return toast('Ya tienes 8 carpetas. Borra alguna en Ajustes para crear otra.');
+    borradorPaso();
+    if (!S.carpetas.includes(c)) { S.carpetas.push(c); persist(); if (S.cfg) encolar({ accion: 'carpetas', carpetas: S.carpetas }); }
+    b.ideas.forEach(i => { if (i.carpetaNueva === c) { i.carpeta = c; delete i.carpetaNueva; } });
+    vib(); pintarResultado(); toast('Carpeta «' + c + '» creada.');
+  },
+  'fila-borrar': el => { const task = el.closest('.task'); filaAbierta = null; vib(); borrarFila(task, el.dataset.id); },
+  'fila-hoy': el => { const task = el.closest('.task'); filaAbierta = null; vib(); soltarOlvidar(task, el.dataset.id); },
+  revisar: el => conSw(el, () => { S.local.sinRevisar = !S.local.sinRevisar; persist(); pintarAjustes(); }),
   foto: () => $('#foto-tareas').click(),
   grupo: el => { S.grupo = el.dataset.v; vib(); const p = paneActual(); if (p) { p.innerHTML = paneHTML(S.cat); p.querySelectorAll('[data-gem]').forEach(pintarGema); const it = p.querySelector('.items'); if (it && !reduceMotion()) { [...it.children].forEach((e, k) => e.style.setProperty('--i', Math.min(k, 8))); it.classList.add('enter'); } } },
   item: (el, e) => { e.stopPropagation(); marcarItem(el.dataset.id || (ideaActual() || {}).id, el.dataset.item, el); },
@@ -1557,6 +1722,8 @@ const ACT = {
 };
 
 document.addEventListener('click', e => {
+  if (arrastrando) return;      // el clic que llega justo al soltar una pulsación larga o un arrastre no cuenta
+  if (filaAbierta && !e.target.closest('.task.abierta .under')) { cerrarFila(); e.preventDefault(); return; }
   const el = e.target.closest('[data-act]');
   if (!el || el.closest('[disabled]') || arrastrando) return;
   if (el.tagName === 'A') return;
@@ -1567,6 +1734,34 @@ $('#writebox').addEventListener('input', contarIdeas);
 // la gema se hunde un poco al tocarla
 document.addEventListener('pointerdown', e => { const g = e.target.closest('.gem.tap'); if (g) g.classList.add('press'); });
 ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => document.addEventListener(t, () => $$('.gem.press').forEach(g => g.classList.remove('press'))));
+
+// ---------- mantener pulsada una tarea: aparecen Borrar (y en Olvidar, A Hoy) ----------
+let filaAbierta = null;
+function abrirFila(task) {
+  cerrarFila();
+  filaAbierta = task; task.classList.add('abierta');
+  const ancho = task.querySelectorAll('.under .act').length * 92;
+  const f = task.querySelector('.front'); f.style.transition = 'transform .32s cubic-bezier(.3,1.2,.5,1)'; f.style.transform = `translateX(-${ancho}px)`;
+  vib();
+}
+function cerrarFila() {
+  if (!filaAbierta) return;
+  const t = filaAbierta, f = t.querySelector('.front'); filaAbierta = null;
+  if (f) { f.style.transition = 'transform .28s cubic-bezier(.2,.8,.2,1)'; f.style.transform = ''; }
+  setTimeout(() => t.classList.remove('abierta'), 280);
+}
+(function pulsacionLarga() {
+  let t = 0, x = 0, y = 0;
+  document.addEventListener('pointerdown', e => {
+    const f = e.target.closest('#s-list .task .front'); clearTimeout(t);
+    if (!f || e.target.closest('[data-act="hecho"]')) return;
+    x = e.clientX; y = e.clientY;
+    t = setTimeout(() => { arrastrando = true; abrirFila(f.parentElement); setTimeout(() => arrastrando = false, 400); }, 480);
+  }, { passive: true });
+  document.addEventListener('pointermove', e => { if (t && Math.hypot(e.clientX - x, e.clientY - y) > 8) { clearTimeout(t); t = 0; } }, { passive: true });
+  ['pointerup', 'pointercancel'].forEach(n => document.addEventListener(n, () => { clearTimeout(t); t = 0; }));
+  document.addEventListener('contextmenu', e => { if (e.target.closest('#s-list .task')) e.preventDefault(); });
+})();
 
 // ---------- gestos ----------
 // · deslizar una fila: a la izquierda borra; en Olvidar, a la derecha pasa a Hoy
@@ -1594,7 +1789,7 @@ let arrastrando = false;
     // ¿qué puede mover este dedo?
     const cosas = $('#sh-cosas'), idea = $('#sh-idea');
     if (idea.classList.contains('on') && t.closest('#sh-idea')) { g.hoja = { el: idea, scrim: $('#scrim-idea'), scroll: idea, cerrar: () => cerrarIdea() }; return; }
-    if (cosas.classList.contains('on') && t.closest('#sh-cosas')) { g.hoja = { el: cosas, scrim: $('#scrim-cosas'), scroll: null, cerrar: () => cerrarHoja('sh-cosas') }; return; }
+    if (cosas.classList.contains('on') && t.closest('#sh-cosas')) { g.hoja = { el: cosas, scrim: $('#scrim-cosas'), scroll: $('#drawers'), cerrar: () => cerrarHoja('sh-cosas') }; return; }
     const scr = t.closest('.screen.hojascr');
     if (scr && scr === actual) { g.hoja = { el: scr, scrim: $('#scrim-scr'), scroll: scr.querySelector('.scroll'), pantalla: true }; return; }
     if (actual && actual.id === 's-home' && !cosas.classList.contains('on') && !t.closest('.gem,.kbd,.ajustes-btn')) { g.abrirCosas = true; return; }
@@ -1621,9 +1816,7 @@ let arrastrando = false;
         const sh = $('#sh-cosas'); sh.classList.add('drag'); g.alto = sh.offsetHeight;
       }
       else if (g.lista && g.eje === 'x') {
-        const olv = g.front && g.front.parentElement.classList.contains('olv');
-        if (g.front && (g.dx < 0 || olv)) g.modo = 'fila';
-        else {
+        {
           g.modo = 'cat';
           const body = $('#list-body'); g.w = body.clientWidth; g.k = CATS.indexOf(S.cat);
           g.cur = paneActual();
@@ -1961,7 +2154,7 @@ async function verFoto(fotoId) {
 async function fotoATareas(file) {
   if (!S.cfg) return toast('Para leer fotos necesito tu Google conectado.');
   const data = await reducirImagen(file, 1800, .85);
-  procesarLento({ imagen: data.split(',')[1] });
+  procesar({ imagen: data.split(',')[1] });
 }
 
 // ---------- resumen de una línea en el resultado ----------
@@ -2095,6 +2288,12 @@ function sembrarDemo() {
 // =====================================================================
 async function arrancar() {
   pintarGemas(); pintarUR();
+  // si la app se cerró mientras Gemini ordenaba, lo provisional se guarda tal cual
+  const sueltas = S.ideas.filter(i => i.provisional);
+  if (sueltas.length && S.cfg) {
+    S.ideas = S.ideas.filter(i => !i.provisional);
+    const { op } = opDeIdeas(sueltas.map(i => Object.assign({}, i)), 'voz'); op.do();
+  }
   // ¿viene un código de conexión en el enlace? (#c=...)
   const hash = new URLSearchParams(location.hash.slice(1));
   if (hash.get('c')) {
