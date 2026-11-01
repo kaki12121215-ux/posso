@@ -1,4 +1,4 @@
-/* POSSO · la app
+/* POSSO · la app — versión «Con texto en directo»
  * Todo en un archivo: datos, conexión con tu Google (Apps Script), voz, pantallas y animaciones.
  */
 'use strict';
@@ -17,7 +17,59 @@ const SUB = {
 const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const DIA_MS = 864e5;
-const VERSION = '1.0';
+const VERSION = '2.0';
+// Esta copia de Posso es la versión:
+//   'directo' = «Con texto en directo»: el dictado del iPhone escribe mientras hablas (más rápida; suena el micro de Apple)
+//   'audio'   = «Sin dictado»: solo graba el audio y Gemini lo transcribe (sin sonido; unos segundos más lenta)
+const VARIANTE = 'directo';
+const NOMBRE_VARIANTE = VARIANTE === 'audio' ? 'Sin dictado' : 'Con texto en directo';
+
+/* Siguiente fecha de una tarea que se repite (el mismo código que en Apps Script) */
+function siguienteRepeticion(r, desde, incluir) {
+  const p = s => new Date(Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10), +(s.slice(11, 13) || 9), +(s.slice(14, 16) || 0)));
+  const iso = d => d.toISOString().slice(0, 16);
+  const hora = (r.hora || '09:00').split(':').map(Number);
+  const base = p(desde);
+  const conHora = d => { const x = new Date(d); x.setUTCHours(hora[0], hora[1], 0, 0); return x; };
+  const vale = d => incluir ? d >= base : d > base;
+  const dow = d => ((d.getUTCDay() + 6) % 7) + 1;   // 1 = lunes … 7 = domingo
+  let d = conHora(base);
+  if (r.tipo === 'cadaN') {
+    const n = Math.max(1, r.n || 1);
+    while (!vale(d)) d = new Date(d.getTime() + n * 864e5);
+    return iso(d);
+  }
+  if (r.tipo === 'mensualDia' || r.tipo === 'mensualOrdinal') {
+    for (let k = 0; k < 14; k++) {
+      const y = base.getUTCFullYear(), m = base.getUTCMonth() + k;
+      let c;
+      if (r.tipo === 'mensualDia') {
+        const ult = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+        c = new Date(Date.UTC(y, m, Math.min(r.dia || 1, ult)));
+      } else {
+        const ds = r.diaSemana || 1, ord = r.ordinal || 1;
+        if (ord > 0) {
+          c = new Date(Date.UTC(y, m, 1));
+          while (dow(c) !== ds) c = new Date(c.getTime() + 864e5);
+          c = new Date(c.getTime() + (ord - 1) * 7 * 864e5);
+        } else {
+          c = new Date(Date.UTC(y, m + 1, 0));
+          while (dow(c) !== ds) c = new Date(c.getTime() - 864e5);
+        }
+      }
+      c = conHora(c);
+      if (vale(c)) return iso(c);
+    }
+    return iso(d);
+  }
+  const dias = r.tipo === 'laborables' ? [1, 2, 3, 4, 5] : r.tipo === 'semanal' ? (r.dias && r.dias.length ? r.dias : [dow(base)]) : [1, 2, 3, 4, 5, 6, 7];
+  for (let k = 0; k < 15; k++) {
+    if (dias.indexOf(dow(d)) >= 0 && vale(d)) return iso(d);
+    d = new Date(d.getTime() + 864e5);
+  }
+  return iso(d);
+}
+
 
 // =====================================================================
 // 2 · UTILIDADES
@@ -49,7 +101,8 @@ const S = {
   papelera: {},                                 // ideas borradas (para deshacer)
   carpetas: load('carpetas', ['Instituto', 'Familia', 'Casa']),
   ajustes: load('ajustes', { avisoSuaveDias: 3, horaAvisos: '09:00', alarmaCalendario: false, avisosActivos: true }),
-  local: load('local', { tema: 'auto', vivo: true, onboarded: false, carpetasOn: true, demoSembrado: false }),
+  local: load('local', { tema: 'auto', onboarded: false, carpetasOn: true, demoSembrado: false }),
+  habituales: load('habituales', []),            // compra de siempre
   outbox: load('outbox', []),
   cat: 'hoy',                                   // categoría abierta
   borrador: null,                               // resultado aún sin guardar
@@ -58,7 +111,7 @@ const S = {
 };
 function persist() {
   save('ideas', S.ideas); save('carpetas', S.carpetas); save('ajustes', S.ajustes);
-  save('local', S.local); save('outbox', S.outbox); save('cfg', S.cfg);
+  save('local', S.local); save('outbox', S.outbox); save('cfg', S.cfg); save('habituales', S.habituales);
 }
 
 // =====================================================================
@@ -116,8 +169,15 @@ async function sincronizar(traer = false) {
       const r = await api('listar');
       // lo que haya cambiado mientras tanto en el iPhone tiene prioridad
       if (!S.outbox.length) {
+        const cambia = JSON.stringify(r.ideas) !== JSON.stringify(S.ideas);
         S.ideas = r.ideas; S.carpetas = r.carpetas; S.ajustes = Object.assign(S.ajustes, r.ajustes);
-        persist(); pintarTodo();
+        if (r.habituales) S.habituales = r.habituales;
+        persist();
+        if (cambia) {
+          pintarTodo(true);
+          if ($('#sh-idea').classList.contains('on') && S.idea && S.idea.tipo === 'guardada') pintarSubEnHoja();
+          if (actual && actual.id === 's-home') tarjetaOlvidar(false);
+        }
       }
     }
   } catch (e) {
@@ -130,14 +190,13 @@ async function sincronizar(traer = false) {
 // 5 · LAS IDEAS
 // =====================================================================
 function catDe(i) {
-  if (i.cat === 'semana' && i.aviso && i.aviso.slice(0, 10) <= hoyIso()) return 'hoy';
+  if ((i.cat === 'semana' || (i.cat === 'algun' && i.repetir)) && i.aviso && i.aviso.slice(0, 10) <= hoyIso()) return 'hoy';
   return i.cat;
 }
 function vivas() {
   const ahora = Date.now();
   return S.ideas.filter(i => {
-    if (i.cat === 'olvidar' && ahora - i.creado > 7 * DIA_MS) return false;
-    if (i.hecho && ahora - (i.hechoEn || 0) > 2 * DIA_MS) return false;
+    if (i.hecho && ahora - (i.hechoEn || 0) > 2 * DIA_MS) return false;   // lo de antes está en «Hecho recientemente»
     return true;
   });
 }
@@ -234,9 +293,9 @@ function hace(ms) {
   if (d < 60) return `Guardada hace ${Math.round(d / 7)} semanas`;
   const m = Math.round(d / 30); return `Guardada hace ${m} ${m === 1 ? 'mes' : 'meses'}`;
 }
-function quedan(creado) {
-  const d = 7 - Math.floor((Date.now() - creado) / DIA_MS);
-  return d <= 0 ? 'Se borra hoy' : d === 1 ? 'Se borra mañana' : `Se borra en ${d} días`;
+function quedan(i) {
+  const d = 7 - Math.floor((Date.now() - (i.pospuesto || i.creado)) / DIA_MS);
+  return d <= 0 ? 'Te pregunto si lo borramos' : d === 1 ? 'Mañana te pregunto si lo borramos' : `En ${d} días te pregunto si lo borramos`;
 }
 
 const ICO = {
@@ -266,15 +325,23 @@ function meta(i, modo) {
   if (i.urgente) partes.push('<span class="urgchip"><i></i>Urgente</span>');
   if (i.carpeta && S.local.carpetasOn) partes.push(`<span class="chip">${ICO.folder}${esc(i.carpeta)}</span>`);
   let txt = '';
+  if (i.repetir && !i.hecho) partes.push(`<span class="mtxt rep">${ICO2.rep}${esc(textoRepetir(i.repetir))}</span>`);
+  if (i.limite && !i.hecho) partes.push(`<span class="mtxt">Entrega ${esc(fechaDia(i.limite))}</span>`);
+  if (i.sumarA && modo === 'borrador') partes.push('<span class="mtxt">Se suma a tu lista</span>');
   if (modo === 'borrador') {
-    if (i.aviso) txt = 'te aviso ' + fechaCorta(i.aviso, true);
-    else if (i.cat === 'olvidar') txt = 'se borra solo en 7 días';
+    if (i.aviso && !i.repetir && !i.limite) txt = 'te aviso ' + fechaCorta(i.aviso, true);
+    else if (i.cat === 'olvidar') txt = 'en 7 días te pregunto si lo borramos';
   } else if (i.hecho) {
     txt = '';
-  } else if (i.cat === 'olvidar') txt = quedan(i.creado);
-  else if (i.aviso) txt = fechaCorta(i.aviso);
-  else if (i.cat === 'algun' && modo === 'lista') txt = hace(i.creado);
+  } else if (i.cat === 'olvidar') txt = quedan(i);
+  else if (i.aviso && !i.repetir && !i.limite) txt = fechaCorta(i.aviso);
+  else if (i.cat === 'algun' && modo === 'lista' && !i.repetir) txt = hace(i.creado);
   if (txt) partes.push(`<span class="mtxt">${esc(cap(txt))}</span>`);
+  if (modo === 'lista' && !i.hecho) {
+    if (i.origen === 'correo') partes.push('<span class="mtxt">Del correo</span>');
+    if ((i.contactos || []).some(c => c.opciones && c.opciones.length)) partes.push(`<span class="mini-ic">${ICO2.phone}</span>`);
+    if (i.lugar) partes.push(`<span class="mini-ic">${ICO2.pin}</span>`);
+  }
   return partes.length ? `<div class="meta">${partes.join('')}</div>` : '';
 }
 
@@ -300,45 +367,156 @@ function animarGema(el, clase) {
 // =====================================================================
 // 8 · NAVEGACIÓN ENTRE PANTALLAS
 // =====================================================================
+// Regla: nada aparece ni desaparece de golpe.
+//  - push / back: la pantalla entra de lado
+//  - fade: fundido con un ligero desplazamiento hacia arriba
+//  - hoja (escribir, ajustes, recordar): sube desde abajo con un pequeño rebote; lo de detrás se oscurece
+//  - none: sin animación (lo usa la tarjeta que crece)
+const HOJAS = ['s-type', 's-aj', 's-rec', 's-hecho', 's-per'];
 let actual = null;
-const pila = [];
+const pila = [];                                  // [{ id, hoja }]
+const ANIM_MS = 420;
+
 function ir(id, modo = 'push', { sinPila = false } = {}) {
   const nueva = $('#' + id); if (!nueva || actual === nueva) return;
   const vieja = actual;
-  if (vieja && !sinPila && modo === 'push') pila.push(vieja.id);
-  if (vieja) {
-    vieja.className = 'screen out-' + modo;
-    setTimeout(() => { if (vieja !== actual) vieja.className = 'screen'; }, 320);
-  }
-  nueva.className = 'screen on in-' + modo;
-  actual = nueva;
-  setTimeout(() => { if (nueva === actual) nueva.className = 'screen on'; }, 420);
-  cerrarHoja('sh-cosas', true); cerrarIdea(true);
+  if (modo === 'push' && HOJAS.includes(id)) modo = 'hoja';
+  if (reduceMotion() && modo !== 'none') modo = 'fade';
+  if (vieja && !sinPila && (modo === 'push' || modo === 'hoja')) pila.push({ id: vieja.id, hoja: modo === 'hoja' });
+  cerrarHoja('sh-cosas', modo === 'none'); cerrarHoja('sh-idea', modo === 'none');
   $('#toast').classList.remove('on');
-  const pint = { 's-home': pintarInicio, 's-list': () => pintarLista(0), 's-aj': pintarAjustes, 's-res': pintarResultado };
+
+  // si salimos de una hoja hacia otra cosa (p. ej. escribir → ordenando), lo de debajo se va también
+  if (modo !== 'hoja' && modo !== 'back') $$('.screen.debajo').forEach(s => { if (s !== nueva) { s.className = 'screen'; } });
+  if (modo !== 'hoja') $('#scrim-scr').classList.remove('on');
+
+  if (vieja) {
+    if (modo === 'hoja') vieja.className = 'screen on debajo';
+    else if (modo === 'none') vieja.className = 'screen';
+    else {
+      vieja.className = 'screen out-' + modo + (vieja.classList.contains('hojascr') ? ' hojascr' : '');
+      setTimeout(() => { if (vieja !== actual && !vieja.classList.contains('debajo')) vieja.className = 'screen'; }, 340);
+    }
+  }
+  if (modo === 'hoja') {
+    $('#scrim-scr').classList.add('on');
+    nueva.className = 'screen on hojascr in-hoja';
+    // si el contenido cabe, la hoja se puede bajar arrastrando desde cualquier sitio
+    setTimeout(() => {
+      const sc = nueva.querySelector('.scroll'), cabe = !sc || sc.scrollHeight <= sc.clientHeight + 2;
+      nueva.style.touchAction = cabe ? 'none' : '';
+    }, 60);
+  } else {
+    nueva.className = 'screen on' + (modo === 'none' ? '' : ' in-' + modo);
+  }
+  actual = nueva;
+  setTimeout(() => { if (nueva === actual) nueva.className = 'screen on' + (modo === 'hoja' ? ' hojascr' : ''); }, ANIM_MS + 120);
+  const pint = { 's-home': pintarInicio, 's-list': () => pintarLista(0), 's-aj': pintarAjustes, 's-res': pintarResultado, 's-hecho': pintarHechas, 's-per': pintarPersonas };
   pint[id] && pint[id]();
   pintarUR();
 }
-function atras() {
-  const id = pila.pop() || 's-home';
-  ir(id, 'back', { sinPila: true });
+
+function atras(opc = {}) {
+  const de = actual, paso = pila.pop() || { id: 's-home', hoja: false };
+  if (de && de.id === 's-list' && S.desdeCajon && paso.id === 's-home') return volverACajon();
+  if (paso.hoja && de && de.classList.contains('hojascr')) {
+    // la hoja baja y lo de debajo se aclara
+    const debajo = $('#' + paso.id);
+    $('#scrim-scr').classList.remove('on');
+    if (!opc.yaFuera) { de.className = 'screen on hojascr out-hoja'; }
+    setTimeout(() => { if (de !== actual) de.className = 'screen'; de.style.transform = ''; de.style.transition = ''; }, 330);
+    debajo.className = 'screen on';
+    actual = debajo;
+    const pint = { 's-home': () => { pintarInicio(); tarjetaOlvidar(false); }, 's-list': () => pintarLista(0, true), 's-aj': pintarAjustes, 's-res': pintarResultado, 's-hecho': pintarHechas };
+    pint[debajo.id] && pint[debajo.id]();
+    pintarUR();
+    return;
+  }
+  ir(paso.id, 'back', { sinPila: true });
 }
 function irInicio(efecto) {
-  pila.length = 0;
+  pila.length = 0; S.desdeCajon = false;
   ir('s-home', 'fade', { sinPila: true });
   if (efecto) setTimeout(() => animarGema($('#home-gem'), efecto), 60);
 }
 
+// ---- tarjeta que crece hasta ocupar la pantalla (y se encoge al volver) ----
+function rectEnApp(el) {
+  const a = $('#app').getBoundingClientRect(), r = el.getBoundingClientRect();
+  return { left: r.left - a.left, top: r.top - a.top, width: r.width, height: r.height };
+}
+function morph(desde, hasta, color, ms, radioDesde, radioHasta) {
+  const m = document.createElement('div');
+  m.className = 'morph';
+  m.style.background = color;
+  $('#app').appendChild(m);
+  const f = r => ({ left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+  const anim = m.animate([
+    Object.assign(f(desde), { borderRadius: radioDesde + 'px' }),
+    Object.assign(f(hasta), { borderRadius: radioHasta + 'px' })
+  ], { duration: ms, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' });
+  return { el: m, fin: anim.finished.catch(() => {}) };
+}
+async function abrirCajon(card) {
+  const c = card.dataset.cat;
+  S.cat = c; H.lista.fut = [];
+  if (reduceMotion()) { S.desdeCajon = false; return ir('s-list', 'fade'); }
+  vib();
+  const a = $('#app'), pantalla = { left: 0, top: 0, width: a.clientWidth, height: a.clientHeight };
+  const m = morph(rectEnApp(card), pantalla, `var(--k-${c})`, 380, 22, 0);
+  card.style.visibility = 'hidden';
+  await m.fin;
+  card.style.visibility = '';
+  S.desdeCajon = true;
+  ir('s-list', 'none');
+  pila.push({ id: 's-home', hoja: false });
+  // la tarjeta se funde con la pantalla de la categoría
+  const b = $('#list-body .pane'); if (b) b.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, easing: 'ease' });
+  m.el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 260, easing: 'ease', fill: 'forwards' }).finished.then(() => m.el.remove());
+}
+async function volverACajon() {
+  S.desdeCajon = false;
+  const c = S.cat, a = $('#app'), pantalla = { left: 0, top: 0, width: a.clientWidth, height: a.clientHeight };
+  // tapa la lista con el color de la categoría, vuelve al inicio con la hoja abierta y encoge hacia su tarjeta
+  const tapa = document.createElement('div'); tapa.className = 'morph';
+  Object.assign(tapa.style, { left: 0, top: 0, width: pantalla.width + 'px', height: pantalla.height + 'px', background: `var(--k-${c})` });
+  a.appendChild(tapa);
+  await tapa.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 150, fill: 'forwards' }).finished.catch(() => {});
+  ir('s-home', 'none', { sinPila: true });
+  pintarCajones(false); abrirHoja('sh-cosas', true);
+  const card = $(`#drawers .drawer[data-cat="${c}"]`);
+  tapa.remove();
+  if (!card) return;
+  card.style.visibility = 'hidden';
+  const m = morph(pantalla, rectEnApp(card), `var(--k-${c})`, 360, 0, 22);
+  await m.fin;
+  card.style.visibility = '';
+  m.el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, fill: 'forwards' }).finished.then(() => m.el.remove());
+}
+
 // ---- hojas que suben desde abajo ----
-function abrirHoja(id) {
-  const sh = $('#' + id), scrim = id === 'sh-cosas' ? $('#scrim-cosas') : $('#scrim-idea');
+const scrimDe = id => id === 'sh-cosas' ? $('#scrim-cosas') : $('#scrim-idea');
+function abrirHoja(id, instantanea) {
+  const sh = $('#' + id), scrim = scrimDe(id);
+  sh.style.transform = ''; scrim.style.opacity = '';
+  if (instantanea) { sh.style.transition = 'none'; scrim.style.transition = 'none'; }
   scrim.classList.add('on'); sh.classList.add('on');
+  if (instantanea) requestAnimationFrame(() => requestAnimationFrame(() => { sh.style.transition = ''; scrim.style.transition = ''; }));
 }
 function cerrarHoja(id, rapido) {
   const sh = $('#' + id); if (!sh || !sh.classList.contains('on')) return;
-  const scrim = id === 'sh-cosas' ? $('#scrim-cosas') : $('#scrim-idea');
-  sh.classList.remove('on'); scrim.classList.remove('on');
-  if (rapido) { sh.style.transition = 'none'; requestAnimationFrame(() => sh.style.transition = ''); }
+  const scrim = scrimDe(id);
+  if (rapido) { sh.style.transition = 'none'; scrim.style.transition = 'none'; }
+  sh.classList.remove('on', 'drag'); scrim.classList.remove('on');
+  sh.style.transform = ''; scrim.style.opacity = '';
+  if (rapido) requestAnimationFrame(() => requestAnimationFrame(() => { sh.style.transition = ''; scrim.style.transition = ''; }));
+}
+
+// ---- un texto que cambia lo hace con un pequeño fundido ----
+function cambiaTexto(el, txt) {
+  if (!el || el.textContent === txt) return;
+  el.textContent = txt;
+  if (!reduceMotion()) el.animate([{ opacity: 0, transform: 'translateY(5px)' }, { opacity: 1, transform: 'none' }], { duration: 280, easing: 'cubic-bezier(.2,.8,.2,1)' });
 }
 
 // =====================================================================
@@ -354,12 +532,12 @@ function pintarTodo(suave) {
 
 // ---------- Inicio ----------
 function pintarInicio() {
-  const n = pendientes('hoy').length, total = vivas().filter(i => !i.hecho).length;
+  const n = pendientes('hoy').length;
   const dark = document.documentElement.dataset.theme === 'dark';
   const usado = S.ideas.length > 0;
-  $('#home-q').textContent = usado && n === 0 ? 'Por hoy, ya está.' : '¿Qué tienes en la cabeza?';
-  $('#home-hint').textContent = dark && usado ? '¿Te ronda algo? Toca la gema' : 'Toca la gema y habla';
-  $('#home-today').textContent = n ? `${n} para hoy` : total ? 'Tus cosas' : 'Tus cosas';
+  cambiaTexto($('#home-q'), usado && n === 0 ? 'Por hoy, ya está.' : '¿Qué tienes en la cabeza?');
+  cambiaTexto($('#home-hint'), dark && usado ? '¿Te ronda algo? Toca la gema' : 'Toca la gema y habla');
+  cambiaTexto($('#home-today'), n ? `${n} para hoy` : 'Tus cosas');
 }
 
 // ---------- Tus cosas (las cuatro tarjetas) ----------
@@ -367,151 +545,287 @@ function pintarCajones(animar = true) {
   $('#drawers').innerHTML = CATS.map((c, k) => {
     const items = pendientes(c);
     const filas = items.slice(0, 2).map(i =>
-      `<div class="row${c === 'olvidar' ? ' olv' : ''}">${check(c, false, 18)}<div style="min-width:0"><div class="t">${esc(i.titulo)}</div>${meta(i, 'cajon')}</div></div>`).join('');
+      `<div class="row${c === 'olvidar' ? ' olv' : ''}">${check(c, false, 18)}<div style="min-width:0"><div class="t">${tituloHTML(i, true)}</div>${meta(i, 'cajon')}</div></div>`).join('');
     return `<button class="drawer" data-act="abrir-cat" data-cat="${c}" style="background:var(--k-${c});--i:${k}">
       <div class="drawer-h"><b>${NOMBRE[c]}</b><span style="color:var(--c-${c})">${items.length}</span></div>
       ${filas || `<div class="empty">${c === 'hoy' ? 'Nada para hoy.' : 'Vacío.'}</div>`}
       ${items.length > 2 ? `<div class="more">+${items.length - 2} más</div>` : ''}
       <span class="chev">${ICO.chev(`var(--c-${c})`)}</span></button>`;
   }).join('');
+  const nh = S.ideas.filter(i => i.hecho && Date.now() - (i.hechoEn || 0) < 7 * DIA_MS).length;
+  const fila = $('#hechas-fila');
+  if (fila) { fila.hidden = !nh; fila.querySelector('span').textContent = `Hecho recientemente · ${nh}`; }
   const d = $('#drawers'); d.classList.remove('enter');
   if (animar) { void d.offsetWidth; d.classList.add('enter'); }
 }
 function abrirCosas() { pintarCajones(); abrirHoja('sh-cosas'); vib(); }
 
-// ---------- Una categoría ----------
+// ---------- Una categoría: el selector de arriba ----------
 function pintarSwitcher() {
-  $('#switcher').innerHTML = CATS.map(c =>
-    `<button data-act="cat" data-cat="${c}" class="${c === S.cat ? 'on' : ''}" style="background:var(--v-${c})" aria-label="${NOMBRE[c]}"></button>`).join('');
+  const sw = $('#switcher');
+  if (!sw.children.length) sw.innerHTML = CATS.map(c =>
+    `<button data-act="cat" data-cat="${c}" style="background:var(--v-${c})" aria-label="${NOMBRE[c]}"></button>`).join('');
+  ponSwitcher(CATS.indexOf(S.cat), true);
 }
-function pintarLista(dir = 0, suave = false) {
-  pintarSwitcher();
-  const c = S.cat, items = deCat(c), pend = items.filter(i => !i.hecho);
+/** p puede ser decimal (durante el gesto): la pastilla se desplaza y se estira hacia el punto siguiente */
+function ponSwitcher(p, animado) {
+  const bs = $$('#switcher button');
+  bs.forEach((b, i) => {
+    const k = Math.max(0, 1 - Math.abs(p - i));
+    b.style.transition = animado ? 'width .32s cubic-bezier(.2,.8,.2,1), height .32s cubic-bezier(.2,.8,.2,1)' : 'none';
+    b.style.width = (8 + 14 * k) + 'px';
+    b.style.height = (8 - 2 * k) + 'px';
+    b.classList.toggle('on', k > .5);
+  });
+}
+
+// ---------- Una categoría: la lista ----------
+function paneHTML(c) {
+  const todos = deCat(c);
+  const grupos = [...new Set(todos.map(i => i.grupo).filter(Boolean))].sort();
+  const filtro = grupos.includes(S.grupo) ? S.grupo : '';
+  const items = filtro ? todos.filter(i => i.grupo === filtro) : todos, pend = items.filter(i => !i.hecho);
   const hoy = new Date();
   const lab = c === 'hoy' ? `Hoy · ${DIAS[hoy.getDay()]} ${hoy.getDate()}` : NOMBRE[c];
   const labCol = document.documentElement.dataset.theme === 'dark' ? `var(--c-${c})` : c === 'hoy' ? 'var(--deep)' : 'var(--ink2)';
   const vacio = !items.length;
-  const head = `<div class="headcard" data-swipecat style="background:var(--k-${c})">
+  const head = `<div class="headcard" style="background:var(--k-${c})">
       <div class="lab" style="color:${labCol}">${lab}</div>
-      <div class="n">${vacio ? (c === 'hoy' ? 'Nada para hoy.' : 'Nada por aquí.') : `${pend.length} ${pend.length === 1 ? 'cosa' : 'cosas'}`}</div>
-      <div class="s">${vacio ? (c === 'hoy' ? 'Aprovecha.' : 'Cuando digas algo así, aparecerá aquí.') : SUB[c]}</div></div>`;
-  let cuerpo;
-  if (vacio) {
-    cuerpo = `<div class="empty-state" data-swipecat><div class="gem" data-gem style="--s:min(200px,26vh);opacity:.9"></div><p>Si te ronda algo, toca la gema y cuéntamelo.</p></div>`;
-  } else {
-    cuerpo = `<div class="items" data-swipecat>${items.map(fila).join('')}
-      <div class="cheer" id="cheer">Una menos.</div>
+      <div class="n">${vacio ? (c === 'hoy' ? 'Nada para hoy.' : 'Nada por aquí.') : !pend.length ? 'Todo hecho.' : `${pend.length} ${pend.length === 1 ? 'cosa' : 'cosas'}`}</div>
+      <div class="s">${vacio ? (c === 'hoy' ? 'Aprovecha.' : 'Cuando digas algo así, aparecerá aquí.') : !pend.length ? (c === 'hoy' ? 'Por hoy, ya está.' : 'No queda nada pendiente.') : SUB[c]}</div></div>`;
+  const cuerpo = vacio
+    ? `<div class="empty-state"><div class="gem" data-gem style="--s:min(200px,26vh);opacity:.9"></div><p>Si te ronda algo, toca la gema y cuéntamelo.</p></div>`
+    : `<div class="items">${items.map(i => fila(i, c)).join('')}
+      <div class="cheer">Una menos.</div>
       ${c === 'hoy' && pend.length ? '<div class="list-note">Desliza a la izquierda para borrar.</div>' : ''}
       ${c === 'olvidar' ? '<div class="list-note">Desliza una idea a la derecha si al final sí quieres hacerla.</div>' : ''}</div>`;
-  }
-  const body = $('#list-body');
-  const antes = suave ? posiciones() : null;
-  body.innerHTML = head + `<div class="scroll">${cuerpo}</div>`;
-  body.querySelectorAll('[data-gem]').forEach(pintarGema);
-  body.className = 'list-body' + (dir > 0 ? ' slide-l' : dir < 0 ? ' slide-r' : '');
-  if (antes) flip(antes);
-  else if (dir === 0 && !suave) { const it = body.querySelector('.items'); if (it) { [...it.children].forEach((e, k) => e.style.setProperty('--i', Math.min(k, 8))); it.classList.add('enter'); setTimeout(() => it.classList.remove('enter'), 1400); } }
+  const chips = grupos.length ? `<div class="grupos">${['', ...grupos].map(g =>
+    `<button class="csel${g === filtro ? ' on' : ''}" data-act="grupo" data-v="${esc(g)}">${g ? esc(g) : 'Todos'}</button>`).join('')}</div>` : '';
+  return head + chips + `<div class="scroll">${cuerpo}</div>`;
 }
-function fila(i) {
-  const c = S.cat, olv = i.cat === 'olvidar';
+function nuevoPane(c) {
+  const p = document.createElement('div');
+  p.className = 'pane'; p.dataset.cat = c; p.innerHTML = paneHTML(c);
+  p.querySelectorAll('[data-gem]').forEach(pintarGema);
+  return p;
+}
+const paneActual = () => $(`#list-body .pane[data-cat="${S.cat}"]`) || $('#list-body .pane');
+
+function pintarLista(dir = 0, suave = false) {
+  pintarSwitcher();
+  if (suave && paneActual()) return refrescarLista();
+  const body = $('#list-body');
+  body.innerHTML = '';
+  const p = nuevoPane(S.cat); body.appendChild(p);
+  const it = p.querySelector('.items');
+  if (it && !reduceMotion()) {
+    [...it.children].forEach((e, k) => e.style.setProperty('--i', Math.min(k, 8)));
+    it.classList.add('enter'); setTimeout(() => it.classList.remove('enter'), 1400);
+  }
+}
+/** Actualiza la lista sin saltos: lo que se va se encoge, lo demás se recoloca, lo nuevo crece */
+let refrescando = null;
+function refrescarLista() {
+  const pane = paneActual(); if (!pane) return;
+  const nuevos = new Set(deCat(S.cat).map(i => i.id));
+  const salen = [...pane.querySelectorAll('.task')].filter(e => !nuevos.has(e.dataset.id) && !e.classList.contains('collapse'));
+  const hacerlo = () => {
+    refrescando = null;
+    const antes = {}; pane.querySelectorAll('.task').forEach(e => antes[e.dataset.id] = e.getBoundingClientRect().top);
+    const nAntes = (pane.querySelector('.headcard .n') || {}).textContent;
+    const sc = pane.querySelector('.scroll'), top = sc ? sc.scrollTop : 0;
+    pane.innerHTML = paneHTML(S.cat);
+    pane.querySelectorAll('[data-gem]').forEach(pintarGema);
+    const sc2 = pane.querySelector('.scroll'); if (sc2) sc2.scrollTop = top;
+    const n = pane.querySelector('.headcard .n');
+    if (n && nAntes && n.textContent !== nAntes) { const t = n.textContent; n.textContent = nAntes; cambiaTexto(n, t); }
+    flip(pane, antes);
+  };
+  if (salen.length && !reduceMotion()) {
+    salen.forEach(encoger);
+    clearTimeout(refrescando); refrescando = setTimeout(hacerlo, 300);
+  } else hacerlo();
+}
+function encoger(e) {
+  e.style.height = e.offsetHeight + 'px'; e.style.overflow = 'hidden';
+  e.classList.add('collapse');
+  requestAnimationFrame(() => { e.style.height = '0px'; });
+}
+function fila(i, c) {
+  c = c || S.cat;
+  const olv = i.cat === 'olvidar';
   const under = olv
     ? `<div class="under go"><div class="act">${ICO.arrowR}Hacer</div></div><div class="under del"><div class="act">${ICO.trash}Borrar</div></div>`
     : `<div class="under del"><div class="act">${ICO.trash}Borrar</div></div>`;
   return `<div class="task${i.hecho ? ' done' : ''}${olv ? ' olv' : ''}" data-id="${i.id}">${under}
     <div class="front"><button data-act="hecho" data-id="${i.id}" style="padding:0;align-self:flex-start" aria-label="Hecho">${check(olv ? 'olvidar' : c, i.hecho, 22)}</button>
-    <div class="body" data-act="editar" data-id="${i.id}"><div class="t">${esc(i.titulo)}</div>${i.hecho ? '' : meta(i, 'lista')}</div></div></div>`;
+    <div class="body" data-act="editar" data-id="${i.id}"><div class="t">${tituloHTML(i)}</div>${i.hecho ? '' : meta(i, 'lista')}
+      ${(i.fotos || []).length && !i.hecho ? `<div class="thumbs sm">${i.fotos.map(f => `<span class="thumb" style="background-image:url(${f.mini})"></span>`).join('')}</div>` : ''}</div></div>
+    ${(i.items || []).length && !i.hecho ? `<div class="subs">${subHTML(i, false)}</div>` : ''}</div>`;
 }
 
-// animación FLIP: las filas se recolocan con suavidad
-function posiciones() {
-  const m = {}; $$('#list-body .task').forEach(e => m[e.dataset.id] = e.getBoundingClientRect().top); return m;
-}
-function flip(antes) {
+// animación FLIP: las filas se recolocan con suavidad y las nuevas crecen
+function flip(cont, antes) {
   if (reduceMotion()) return;
-  $$('#list-body .task').forEach(e => {
-    const a = antes[e.dataset.id]; if (a == null) { e.style.animation = 'rise .4s var(--ease) both'; return; }
+  cont.querySelectorAll('.task').forEach(e => {
+    const a = antes[e.dataset.id];
+    if (a == null) {
+      const h = e.offsetHeight;
+      e.animate([{ height: '0px', opacity: 0, transform: 'scale(.97)' }, { height: h + 'px', opacity: 1, transform: 'none' }],
+        { duration: 320, easing: 'cubic-bezier(.2,.8,.2,1)' });
+      return;
+    }
     const d = a - e.getBoundingClientRect().top; if (!d) return;
-    e.style.transform = `translateY(${d}px)`; e.style.transition = 'none';
-    requestAnimationFrame(() => { e.style.transition = 'transform .45s var(--ease)'; e.style.transform = ''; });
+    e.animate([{ transform: `translateY(${d}px)` }, { transform: 'none' }], { duration: 420, easing: 'cubic-bezier(.2,.8,.2,1)' });
   });
 }
-function cambiarCat(c, dir) {
-  if (c === S.cat) return;
-  dir = dir || (CATS.indexOf(c) > CATS.indexOf(S.cat) ? 1 : -1);
-  S.cat = c; vib(); pintarLista(dir);
-}
 
+// ---------- pasar de una categoría a otra, como tarjetas ----------
+let deslizando = false;
+async function irACat(nueva, desdeDx = 0, vel = 0) {
+  if (deslizando) return;
+  const k0 = CATS.indexOf(S.cat), k1 = CATS.indexOf(nueva);
+  if (k1 === k0 || k1 < 0) return;
+  const dir = k1 > k0 ? 1 : -1;
+  const body = $('#list-body'), w = body.clientWidth;
+  const cur = paneActual();
+  let sig = body.querySelector(`.pane[data-cat="${nueva}"]`);
+  if (!sig) { sig = nuevoPane(nueva); body.appendChild(sig); }
+  body.querySelectorAll('.pane').forEach(p => { if (p !== cur && p !== sig) p.remove(); });
+  deslizando = true; vib();
+  const ms = reduceMotion() ? 200 : Math.max(200, Math.min(360, 360 - Math.abs(vel) * 80));
+  if (reduceMotion()) {
+    sig.style.transform = 'none'; sig.style.opacity = 0;
+    await sig.animate([{ opacity: 0 }, { opacity: 1 }], { duration: ms, fill: 'forwards' }).finished.catch(() => {});
+  } else {
+    const ease = 'cubic-bezier(.2,.8,.2,1)';
+    const a1 = cur.animate([{ transform: `translateX(${desdeDx}px)` }, { transform: `translateX(${-dir * w}px)` }], { duration: ms, easing: ease, fill: 'forwards' });
+    const a2 = sig.animate([{ transform: `translateX(${desdeDx + dir * w}px)` }, { transform: 'translateX(0)' }], { duration: ms, easing: ease, fill: 'forwards' });
+    ponSwitcher(k1, true);
+    await Promise.all([a1.finished, a2.finished]).catch(() => {});
+  }
+  S.cat = nueva;
+  cur.remove();
+  sig.getAnimations().forEach(a => a.cancel());
+  sig.style.transform = ''; sig.style.opacity = '';
+  ponSwitcher(k1, false);
+  deslizando = false;
+}
+function cambiarCat(c) { irACat(c); }
+
+// ---------- hecho, borrar, soltar ----------
 function marcarHecho(id, btn) {
   const i = buscar(id); if (!i) return;
   if (i.cat === 'olvidar') return;               // lo de Olvidar no se "hace": se deja ir
+  if (i.repetir && !i.hecho) {                    // vuelve sola la próxima vez
+    const ck = btn.querySelector('.ck');
+    if (ck) { ck.classList.add('done'); ck.classList.remove('pop'); void ck.offsetWidth; ck.classList.add('pop'); }
+    vib();
+    const sig = proximaVez(i);
+    setTimeout(() => {
+      hacer(OP.cambiar(id, { aviso: sig, hecho: false, items: (i.items || []).map(x => Object.assign({}, x, { hecho: false })) }));
+      refrescarLista();
+      toast('Una menos. Vuelve ' + fechaCorta(sig, true).replace(/^(\D)/, m => m) + '.');
+    }, 520);
+    return;
+  }
   const nuevo = !i.hecho;
   const ck = btn.querySelector('.ck');
-  if (ck) { ck.classList.toggle('done', nuevo); ck.classList.add('pop'); }
+  if (ck) { ck.classList.toggle('done', nuevo); ck.classList.remove('pop'); void ck.offsetWidth; ck.classList.add('pop'); }
+  const task = btn.closest('.task'); if (task) task.classList.toggle('done', nuevo);   // el tachado se dibuja poco a poco
   vib();
   setTimeout(() => {
-    hacer(OP.cambiar(id, { hecho: nuevo }));
-    pintarLista(0, true);
-    if (nuevo) { const ch = $('#cheer'); if (ch) { ch.classList.add('on'); setTimeout(() => ch.classList.remove('on'), 2200); } }
-  }, 420);
+    hacer(OP.cambiar(id, i.items && i.items.length ? { hecho: nuevo, items: i.items.map(x => Object.assign({}, x, { hecho: nuevo })) } : { hecho: nuevo }));
+    refrescarLista();
+    if (nuevo) setTimeout(() => { const ch = paneActual() && paneActual().querySelector('.cheer'); if (ch) { ch.classList.add('on'); setTimeout(() => ch.classList.remove('on'), 2200); } }, 60);
+  }, 520);
 }
 function borrarFila(el, id) {
-  const h = el.offsetHeight;
-  el.style.height = h + 'px';
-  requestAnimationFrame(() => { el.classList.add('collapse'); el.style.height = '0px'; });
+  encoger(el);
   setTimeout(() => {
-    hacer(OP.quitar(id)); pintarLista(0, true);
+    hacer(OP.quitar(id)); refrescarLista();
     toast('Borrado', 'Deshacer', () => deshacer('lista'));
   }, 300);
 }
 function soltarOlvidar(el, id) {   // de Olvidar a Hoy
-  el.classList.add('leave');
-  setTimeout(() => { hacer(OP.cambiar(id, { cat: 'hoy' })); pintarLista(0, true); toast('Pasa a Hoy', 'Deshacer', () => deshacer('lista')); }, 380);
+  encoger(el);
+  setTimeout(() => { hacer(OP.cambiar(id, { cat: 'hoy' })); refrescarLista(); toast('Pasa a Hoy', 'Deshacer', () => deshacer('lista')); }, 300);
 }
 
 // ---------- Hoja de una idea (mover, carpeta, urgente, aviso) ----------
 function abrirIdea(ref) {
   // ref: {tipo:'guardada', id} | {tipo:'borrador', k}
-  S.idea = ref; pintarIdea(); abrirHoja('sh-idea'); vib();
+  S.idea = ref; pintarIdea(); const sh = $('#sh-idea'); sh.scrollTop = 0; abrirHoja('sh-idea'); vib();
+  // si cabe entera, se puede arrastrar hacia abajo desde cualquier sitio
+  requestAnimationFrame(() => { sh.style.touchAction = sh.scrollHeight <= sh.clientHeight + 2 ? 'none' : 'pan-y'; });
 }
 function ideaActual() {
   const r = S.idea; if (!r) return null;
-  return r.tipo === 'guardada' ? buscar(r.id) : S.borrador.ideas[r.k];
+  return r.tipo === 'guardada' ? buscar(r.id) : (S.borrador && S.borrador.ideas[r.k]);
 }
 function pintarIdea() {
   const i = ideaActual(); if (!i) return;
+  const guardada = S.idea.tipo === 'guardada';
   const chips = (lista, sel, act) => lista.map(v =>
     `<button class="csel${v.val === sel ? ' on' : ''}" data-act="${act}" data-v="${esc(v.val)}">${esc(v.txt)}</button>`).join('');
+  const conItems = i.tipo === 'lista' || i.tipo === 'receta' || (i.items || []).length;
+  const orig = i.original;
   $('#sh-idea').innerHTML = `
-    <div class="grab-zone" data-drag="sh-idea"><div class="grab"></div></div>
-    <div class="cap">Idea</div>
-    <input class="idea-title" id="idea-title" value="${esc(i.titulo)}" maxlength="120">
-    ${i.frase ? `<div class="idea-frase">«${esc(i.frase)}»</div>` : ''}
+    <div class="grab-zone"><div class="grab"></div></div>
+    <div class="cap">${i.tipo === 'lista' ? 'Lista' : i.tipo === 'receta' ? 'Receta' : i.tipo === 'nota' ? 'Nota' : 'Idea'}${i.grupo ? ' · ' + esc(i.grupo) : ''}</div>
+    <input class="idea-title" id="idea-title" value="${esc(i.tipo === 'lista' ? (i.clave || i.titulo) : i.titulo)}" maxlength="120">
+    ${i.frase && i.origen !== 'correo' ? `<div class="idea-frase">«${esc(i.frase)}»</div>` : ''}
+    ${i.tipo === 'nota' ? `<textarea class="nota-in" id="nota-in" rows="6">${esc(i.nota || '')}</textarea>` : ''}
+    ${conItems ? `<div class="idea-sub" id="idea-sub"></div>` : ''}
+    ${esCompra(i) && guardada ? `<div class="acts"><button class="actb" data-act="compartir-lista">${ICO2.share}Compartir por WhatsApp</button></div>` : ''}
+    ${contactosHTML(i)}${mapsHTML(i)}
+    ${i.enlace ? `<div class="acts"><a class="actb" href="${esc(i.enlace)}" target="_blank" rel="noopener">${ICO2.link}${i.tipo === 'receta' ? 'Ver la receta' : i.origen === 'correo' ? 'Abrir el correo' : 'Abrir el enlace'}</a></div>` : ''}
+    ${orig ? `<details class="orig"><summary>Ver mensaje original</summary><div><b>${esc(orig.asunto || '')}</b>${orig.de ? `<small>${esc(orig.de)}${orig.cuenta ? ' · ' + esc(orig.cuenta) : ''}</small>` : orig.cuenta ? `<small>${esc(orig.cuenta)}</small>` : ''}${orig.texto ? `<p>${esc(orig.texto)}</p>` : '<p class="hint">Modo cuidado: aquí solo está el asunto. El correo completo está en Gmail.</p>'}</div></details>` : ''}
     <div class="cap" style="margin:20px 0 8px">¿Dónde va?</div>
     <div class="chips">${chips(CATS.map(c => ({ val: c, txt: NOMBRE[c] })), i.cat, 'idea-cat')}</div>
     ${S.local.carpetasOn ? `<div class="cap" style="margin:14px 0 8px">Carpeta</div>
-    <div class="chips">${chips(S.carpetas.map(c => ({ val: c, txt: c })), i.carpeta, 'idea-carpeta')}<button class="csel" data-act="nueva-carpeta" data-desde="idea">+ Nueva</button></div>` : ''}
+    <div class="chips" id="idea-carpetas">${chips(S.carpetas.map(c => ({ val: c, txt: c })), i.carpeta, 'idea-carpeta')}<button class="csel" data-act="nueva-carpeta" data-desde="idea">+ Nueva</button></div>` : ''}
+    <div id="idea-rep">${repetirHTML(i)}</div>
     <div style="margin-top:14px">
-      <button class="srow" data-act="idea-urgente"><span style="display:flex;align-items:center;gap:8px"><span class="dot-urg" style="width:8px;height:8px"></span>Urgente</span><span class="sw urg${i.urgente ? ' on' : ''}"><i></i></span></button>
-      <button class="srow" data-act="idea-recordar"><span>Recordármelo</span><span class="v">${i.aviso ? esc(cap(fechaCorta(i.aviso))) + ' ›' : 'No ›'}</span></button>
+      <button class="srow" data-act="idea-urgente"><span style="display:flex;align-items:center;gap:8px"><span class="dot-urg" style="width:8px;height:8px"></span>Urgente</span><span class="sw urg${i.urgente ? ' on' : ''}" id="idea-urg"><i></i></span></button>
+      <button class="srow" data-act="idea-recordar"><span>Recordármelo</span><span class="v" id="idea-rec">${i.aviso ? esc(cap(fechaCorta(i.aviso))) + ' ›' : 'No ›'}</span></button>
+      ${i.limite ? `<label class="srow"><span>Fecha de entrega</span><span class="v">${esc(fechaDia(i.limite))} ›</span><input type="date" id="idea-limite" value="${esc(i.limite)}" class="oculto"></label>` : ''}
+      ${guardada ? `<div class="srow"><span>Fotos</span></div><div id="idea-fotos">${fotosHTML(i, true)}</div>` : ''}
     </div>
     <div class="idea-foot"><button class="link big" style="padding-left:0" data-act="idea-quitar">Quitar</button><button class="pill" data-act="cerrar-idea">Hecho</button></div>`;
+  if (conItems) pintarSubEnHoja();
+  const nota = $('#nota-in'); if (nota) nota.addEventListener('change', () => cambiarIdea({ nota: nota.value }));
+  const lim = $('#idea-limite'); if (lim) lim.addEventListener('change', () => { if (lim.value) { const d = deIso(lim.value + 'T09:00'); d.setDate(d.getDate() - 2); cambiarIdea({ limite: lim.value, aviso: isoLocal(d) }); pintarIdea(); } });
+  const fi = $('#foto-in'); if (fi) fi.addEventListener('change', () => fi.files[0] && anadirFoto(fi.files[0]));
+}
+/** Los chips y el interruptor cambian en su sitio, con transición (nunca de golpe) */
+function actualizarIdeaDOM() {
+  const i = ideaActual(); if (!i) return;
+  $$('#sh-idea [data-act="idea-cat"]').forEach(b => b.classList.toggle('on', b.dataset.v === i.cat));
+  $$('#sh-idea [data-act="idea-carpeta"]').forEach(b => b.classList.toggle('on', b.dataset.v === i.carpeta));
+  const u = $('#idea-urg'); if (u) u.classList.toggle('on', !!i.urgente);
+  const rp = $('#idea-rep'); if (rp) rp.innerHTML = repetirHTML(i);
+  cambiaTexto($('#idea-rec'), i.aviso ? cap(fechaCorta(i.aviso)) + ' ›' : 'No ›');
 }
 function cambiarIdea(cambios) {
   const r = S.idea, i = ideaActual(); if (!i) return;
   if (r.tipo === 'guardada') hacer(OP.cambiar(i.id, cambios));
   else { borradorPaso(); Object.assign(i, cambios); }
-  vib(); pintarIdea();
+  vib(); actualizarIdeaDOM();
+  if (r.tipo === 'borrador' && actual && actual.id === 's-res') pintarResultado();
 }
 function guardarTitulo() {
   const t = $('#idea-title');
   if (!t || !S.idea) return;
   const i = ideaActual(), v = t.value.trim();
-  if (i && v && v !== i.titulo) cambiarIdea({ titulo: v });
+  if (!i || !v) return;
+  if (i.tipo === 'lista') { if (v !== (i.clave || i.titulo)) cambiarIdea({ clave: v, titulo: v }); }
+  else if (v !== i.titulo) cambiarIdea({ titulo: v });
 }
 function cerrarIdea(rapido) {
   if (!rapido) guardarTitulo();
   cerrarHoja('sh-idea', rapido);
-  if (!rapido) { S.idea = null; pintarTodo(true); }
+  if (!rapido) { S.idea = null; setTimeout(() => pintarTodo(true), 120); }
 }
 
 // ---------- Recordar ----------
@@ -534,7 +848,6 @@ function abrirRecordar() {
   const i = ideaActual(); if (!i) return;
   recSel = i.aviso || null;
   recVuelta = S.idea;
-  cerrarHoja('sh-idea', true);
   pintarRecordar();
   ir('s-rec', 'push');
 }
@@ -598,15 +911,29 @@ function pintarAjustes() {
       ${tg('aviso-suave', S.ajustes.avisoSuaveDias > 0, 'Recordar si llevo días sin usarla')}
       <div class="arow"><span>Hora de los avisos</span><span class="v">${esc(S.ajustes.horaAvisos)} ›</span><input type="time" id="aj-hora" value="${esc(S.ajustes.horaAvisos)}"></div>
       ${tg('alarma-cal', S.ajustes.alarmaCalendario, 'Que también suene Google Calendar')}
+      ${tg('repaso', S.ajustes.repasoDomingo !== false, 'Repaso del domingo por la tarde')}
       ${S.cfg && S.local.push ? row('probar-aviso', 'Probar un aviso', '') : ''}
     </div>
     <div class="aj-note" style="padding:8px 32px 0">Las cosas con fecha se apuntan siempre en tu Google Calendar. Si dejas apagado lo de que suene, solo te avisa Posso y no te llegan dos avisos.</div>
+    <div class="aj-h">Personas y alumnos</div>
+    <div class="card">
+      ${row('personas', 'Personas', 'Llamar y WhatsApp')}
+      ${row('alumnos', 'Lista de alumnos', 'modo cuidado')}
+    </div>
+    <div class="aj-note" style="padding:8px 32px 0">Los teléfonos y los nombres de alumnos se quedan en tu hoja de Posso. Nunca se envían a Gemini.</div>
+    <div class="aj-h">Cuentas de correo</div>
+    <div class="card">
+      ${tg('correo', S.ajustes.correoActivo !== false, 'Leer los correos con la etiqueta «Posso»')}
+      ${row('puente', 'Otras cuentas (Posso puente)', 'cómo')}
+    </div>
+    <div class="aj-note" style="padding:8px 32px 0">Pon la etiqueta «Posso» a un correo y en unos minutos aparece como tarea, con un título claro y el enlace al correo.</div>
     <div class="aj-h">Voz y cuenta</div>
     <div class="card">
-      ${tg('vivo', S.local.vivo, 'Ver lo que digo mientras hablo')}
+      <div class="arow"><span>Versión</span><span class="v">${NOMBRE_VARIANTE}</span></div>
+      <div class="aj-note" style="padding:2px 16px 12px">${VARIANTE === 'audio' ? 'Solo se graba el audio y Gemini lo transcribe: sin sonido del micrófono, unos segundos más lenta.' : 'El dictado del iPhone escribe mientras hablas: más rápida, pero suena el micrófono de Apple al empezar y al acabar.'}</div>
       ${row('cuenta', 'Cuenta de Google', S.cfg ? 'conectada' : 'modo prueba')}
     </div>
-    <div class="aj-foot">Posso ${VERSION} · Lo que dices no se guarda como audio: solo el texto ordenado, en tu propio Google Drive.</div>`;
+    <div class="aj-foot">Posso ${VERSION} · ${NOMBRE_VARIANTE} · Lo que dices no se guarda como audio: solo el texto ordenado, en tu propio Google Drive.</div>`;
   $('#aj-hora').addEventListener('change', e => { if (e.target.value) guardarAjustes({ horaAvisos: e.target.value }); });
 }
 function guardarAjustes(c) {
@@ -635,7 +962,7 @@ function pintarBienvenida() {
     ['semana', 'Con fecha cercana. Te aviso.', 'el regalo de la ama, el lunes'],
     ['algun', 'Ideas sin prisa.', 'una escapada a Biarritz'],
     ['olvidar', 'No es tarea. Lo sueltas y se borra solo.', 'lo que dijo aquel compañero']
-  ].map(([c, d, e], k) => `<div class="how" style="background:var(--k-${c});--i:${k}"><div class="how-h"><i style="background:var(--c-${c})"></i><b>${NOMBRE[c]}</b></div><p>${d} <q>${e}</q></p></div>`).join('');
+  ].map(([c, d, e], k) => `<div class="how" style="background:var(--k-${c});--i:${k}"><div class="how-h"><i style="background:var(--v-${c})"></i><b>${NOMBRE[c]}</b></div><p>${d} <q>${e}</q></p></div>`).join('');
   pintarPermisos();
 }
 function pintarPermisos() {
@@ -685,7 +1012,7 @@ async function empezarVoz() {
   ir('s-listen', 'fade');
   $('#live').innerHTML = ''; V.texto = ''; V.interino = '';
   $('#listen-t').textContent = 'Te escucho.';
-  $('#listen-s').textContent = 'Dilo tal cual, sin orden. Ya lo ordeno yo.';
+  $('#listen-s').textContent = VARIANTE === 'audio' ? 'Dilo tal cual, sin orden. Cuando acabes, toca el tic.' : 'Dilo tal cual, sin orden. Ya lo ordeno yo.';
   $('#rec-time').textContent = 'Escuchando · 0:00';
   $('#rec-state').style.visibility = 'visible';
   try {
@@ -731,7 +1058,7 @@ async function empezarVoz() {
   } catch (e) {}
   // texto en directo (si el iPhone lo permite)
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (S.local.vivo && SR) {
+  if (VARIANTE === 'directo' && SR) {
     try {
       const sr = new SR(); V.sr = sr;
       sr.lang = 'es-ES'; sr.continuous = true; sr.interimResults = true;
@@ -772,6 +1099,8 @@ async function terminarVoz() {
   const blob = await pararVoz();
   const texto = (V.texto + ' ' + V.interino).trim();
   if (!blob || dur < 800) { if (texto) return procesar({ texto }); irInicio(); return; }
+  // Con texto en directo: si el iPhone ya ha escrito lo que has dicho, se manda el texto (mucho más rápido que el audio)
+  if (VARIANTE === 'directo' && S.cfg && texto.split(/\s+/).length >= 3) return procesar({ texto, blob });
   procesar({ blob, textoVivo: texto });
 }
 async function cancelarVoz() { await pararVoz(); irInicio(); }
@@ -811,7 +1140,44 @@ const aBase64 = blob => new Promise(ok => { const r = new FileReader(); r.onload
 // =====================================================================
 // 11 · ORDENAR (Gemini o, en modo prueba, aquí mismo)
 // =====================================================================
+// Con texto: el resultado sale al momento (ordenado aquí mismo) y Gemini lo afina por detrás en pocos segundos
+let afinadoN = 0;
+async function procesarRapido(entrada) {
+  S.entrada = entrada;
+  const local = ordenarAqui(entrada.texto);
+  if (!local.length) return procesarLento(entrada);
+  const n = ++afinadoN;
+  S.borrador = { ideas: local.map(i => Object.assign({ frase: '', carpeta: '', aviso: '', urgente: false }, i)), transcripcion: entrada.texto, provisional: true };
+  H.borrador = { past: [], fut: [] };
+  ir('s-res', 'fade', { sinPila: true });
+  marcaAfinando(true);
+  try {
+    const r = await api('procesar', { texto: entrada.texto }, 60000);
+    const b = S.borrador;
+    // solo se sustituye si sigues en el resultado y no has tocado nada
+    if (n === afinadoN && b && b.provisional && !H.borrador.past.length && r.ideas && r.ideas.length) {
+      S.borrador = { ideas: r.ideas.map(i => Object.assign({ frase: '', carpeta: '', aviso: '', urgente: false }, i)), transcripcion: r.transcripcion };
+      if (actual && actual.id === 's-res') pintarResultado();
+    }
+  } catch (e) {}
+  if (n === afinadoN) { marcaAfinando(false); if (S.borrador) S.borrador.provisional = false; }
+}
+function marcaAfinando(on) {
+  let el = $('#afinando');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'afinando';
+    el.style.cssText = 'margin-right:auto;align-self:center;padding-left:12px;font-size:12.5px;font-weight:600;color:var(--ink3);display:flex;align-items:center;gap:6px;transition:opacity .4s';
+    el.innerHTML = '<span class="rec-dot"></span>Afinando…';
+    $('#s-res .res-top').prepend(el);
+  }
+  el.style.opacity = on ? 1 : 0;
+}
+
 async function procesar(entrada) {
+  if (S.cfg && entrada.texto) return procesarRapido(entrada);
+  return procesarLento(entrada);
+}
+async function procesarLento(entrada) {
   S.entrada = entrada;
   ir('s-proc', 'fade', { sinPila: true });
   $('#proc-t').textContent = 'Ordenando…';
@@ -823,7 +1189,8 @@ async function procesar(entrada) {
     let r;
     if (S.cfg) {
       const datos = {};
-      if (entrada.texto) datos.texto = entrada.texto;
+      if (entrada.imagen) { datos.imagen = entrada.imagen; datos.imagenMime = 'image/jpeg'; $('#proc-s').textContent = 'Leyendo la foto…'; }
+      else if (entrada.texto) datos.texto = entrada.texto;
       else {
         if (!entrada.audio) {
           const wav = await Promise.race([aWav(entrada.blob).catch(() => null), wait(8000).then(() => null)]);
@@ -837,7 +1204,7 @@ async function procesar(entrada) {
     } else {
       await wait(900);
       const t = entrada.texto || entrada.textoVivo;
-      if (!t) throw new Error('En el modo prueba necesito ver el texto. Activa «Ver lo que digo mientras hablo» o escríbelo.');
+      if (!t) throw new Error(entrada.imagen ? 'Para leer fotos necesito tu Google conectado.' : 'En el modo prueba necesito ver el texto: escríbelo con el teclado.');
       r = { transcripcion: t, ideas: ordenarAqui(t) };
     }
     if (!r.ideas || !r.ideas.length) throw new Error('No he encontrado ninguna idea. ¿Lo intentamos otra vez?');
@@ -847,6 +1214,7 @@ async function procesar(entrada) {
     H.borrador = { past: [], fut: [] };
     ir('s-res', 'fade', { sinPila: true });
   } catch (e) {
+    if (actual && actual.id !== 's-proc') return;
     $('#proc-gem').classList.remove('think');
     $('#proc-t').textContent = 'No he podido ordenarlo.';
     const m = String(e.message || e);
@@ -858,20 +1226,33 @@ async function procesar(entrada) {
 // ---------- Resultado ----------
 function pintarResultado() {
   const b = S.borrador; if (!b) return;
+  b.ideas.forEach(i => { if (!i._rid) i._rid = uid(); });
   const n = b.ideas.filter(i => i.cat === 'hoy').length;
-  $('#res-t').textContent = n ? `Solo ${n} para hoy.` : 'Nada para hoy.';
-  $('#res-s').textContent = b.ideas.length === 1 ? 'Ya tiene su sitio. Tócala para moverla.' : 'Lo demás ya tiene su sitio. Toca una idea para moverla.';
+  cambiaTexto($('#res-t'), n ? `Solo ${n} para hoy.` : 'Nada para hoy.');
+  cambiaTexto($('#res-s'), (resumen(b.ideas) + ' ' + (b.ideas.length === 1 ? 'Tócala para moverla.' : 'Toca una idea para moverla.')).trim());
+  const el = $('#res-cards');
+  const primera = !b._pintado;
+  const antes = {};
+  if (!primera) el.querySelectorAll('[data-rid]').forEach(r => antes[r.dataset.rid] = r.getBoundingClientRect().top);
   const orden = (a, c) => (b.ideas[c].urgente - b.ideas[a].urgente) || (a - c);
-  $('#res-cards').innerHTML = CATS.map(c => {
+  el.innerHTML = CATS.map(c => {
     const ks = b.ideas.map((i, k) => k).filter(k => b.ideas[k].cat === c).sort(orden);
     if (!ks.length) return '';
     return `<div class="rcard" style="background:var(--k-${c})"><div class="rcard-h"><b>${NOMBRE[c]}</b><span style="color:var(--c-${c})">${ks.length}</span></div>
-      ${ks.map(k => { const i = b.ideas[k]; return `<div class="row${c === 'olvidar' ? ' olv' : ''}" data-act="editar-borrador" data-k="${k}">${check(c, false, 19)}<div style="min-width:0"><div class="t">${esc(i.titulo)}</div>${meta(i, 'borrador')}</div></div>`; }).join('')}</div>`;
+      ${ks.map(k => { const i = b.ideas[k]; return `<div class="row${c === 'olvidar' ? ' olv' : ''}" data-act="editar-borrador" data-k="${k}" data-rid="${i._rid}">${check(c, false, 19)}<div style="min-width:0;flex:1"><div class="t">${tituloHTML(i)}</div>${meta(i, 'borrador')}${(i.items || []).length ? `<div class="subs prev">${i.items.slice(0, 8).map(x => `<div class="si"><span class="dotsub"></span><span class="st">${esc(x.t)}</span></div>`).join('')}${i.items.length > 8 ? `<div class="more">+${i.items.length - 8} más</div>` : ''}</div>` : ''}</div></div>`; }).join('')}</div>`;
   }).join('');
-  const el = $('#res-cards');
   [...el.children].forEach((e, k) => e.style.setProperty('--i', k));
-  if (!H.borrador.past.length && !H.borrador.fut.length) { el.classList.remove('enter'); void el.offsetWidth; el.classList.add('enter'); }
-  else el.classList.remove('enter');
+  el.classList.remove('enter');
+  if (primera) { b._pintado = true; void el.offsetWidth; el.classList.add('enter'); }
+  else if (!reduceMotion()) {
+    // la idea que cambia de sitio sale de su tarjeta y entra en la nueva; las demás se recolocan
+    el.querySelectorAll('[data-rid]').forEach(r => {
+      const a = antes[r.dataset.rid];
+      if (a == null) { r.animate([{ opacity: 0, transform: 'scale(.96)' }, { opacity: 1, transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.2,.8,.2,1)' }); return; }
+      const d = a - r.getBoundingClientRect().top;
+      if (d) r.animate([{ transform: `translateY(${d}px)` }, { transform: 'none' }], { duration: 420, easing: 'cubic-bezier(.2,.8,.2,1)' });
+    });
+  }
   pintarUR();
 }
 function borradorPaso() { H.borrador.past.push(JSON.stringify(S.borrador.ideas)); H.borrador.fut = []; }
@@ -883,22 +1264,37 @@ function borradorUR(dir) {
 }
 function guardarBorrador() {
   const b = S.borrador; if (!b) return;
+  afinadoN++; marcaAfinando(false);
   const ahora = Date.now();
-  const lista = b.ideas.map((i, k) => ({
-    id: uid(), creado: ahora + k, orden: ahora + k, titulo: i.titulo, frase: i.frase || '', cat: i.cat,
-    carpeta: i.carpeta || '', urgente: !!i.urgente, aviso: i.aviso || '', hecho: false, hechoEn: 0
-  }));
-  hacer(OP.crear(lista));
+  const nuevas = [], ops = [];
+  b.ideas.forEach((i, k) => {
+    const destino = i.sumarA && buscar(i.sumarA);
+    if (destino) {   // se suma a una lista que ya tienes
+      const items = (destino.items || []).map(x => Object.assign({}, x));
+      (i.items || []).forEach(n => {
+        const p = n.reemplaza ? items.findIndex(x => x.id === n.reemplaza) : -1;
+        if (p >= 0) items[p].t = n.t; else items.push({ id: n.id || uid(), t: n.t, hecho: false, zona: n.zona });
+      });
+      ops.push(OP.cambiar(destino.id, { items, hecho: false }));
+      return;
+    }
+    const o = Object.assign({}, i, { id: uid(), creado: ahora + k, orden: ahora + k, hecho: false, hechoEn: 0, origen: i.origen || (S.entrada && S.entrada.imagen ? 'foto' : 'voz') });
+    delete o._rid; delete o.sumarA;
+    if (o.items) o.items = o.items.map(x => ({ id: x.id || uid(), t: x.t, hecho: false, zona: x.zona }));
+    nuevas.push(o);
+  });
+  if (nuevas.length) ops.push(OP.crear(nuevas));
+  hacer({ do: () => ops.forEach(o => o.do()), undo: () => ops.slice().reverse().forEach(o => o.undo()) });
   S.borrador = null; S.entrada = null;
   irInicio('drop');
-  const nHoy = lista.filter(i => i.cat === 'hoy').length;
+  const nHoy = nuevas.filter(i => i.cat === 'hoy').length;
   setTimeout(() => toast(nHoy ? 'Guardado. Ya no tienes que acordarte.' : 'Guardado. Cada cosa en su sitio.'), 450);
 }
 
 // ---------- Ordenar sin Gemini (modo prueba) ----------
 function ordenarAqui(texto) {
   const trozos = texto.replace(/\b(y luego|y también|también|además|y después|y otra cosa)\b/gi, ',')
-    .split(/[,;.\n]+|\s+y\s+(?=(?:tengo|hay|el|la|los|las|mañana|algún|me|que|llamar|comprar|preparar|hacer|ir|mandar|enviar)\b)/i)
+    .split(/[,;.\n]+|\s+y\s+(?=(?:tengo|hay|el|la|los|las|mañana|pasado|algún|me|que|[a-záéíóú]+(?:ar|er|ir))\b)/i)
     .map(s => s.trim()).filter(s => s.length > 3)
     .reduce((acc, s) => {             // "eso es urgente" va con la idea de antes
       if (/^(y\s+)?(eso\s+)?(es\s+)?(muy\s+)?urgente$|^(es\s+)?para\s+ya$/i.test(s) && acc.length) acc[acc.length - 1] += ', urgente';
@@ -938,7 +1334,8 @@ function ordenarAqui(texto) {
 // 12 · ESCRIBIR
 // =====================================================================
 function abrirEscribir(texto = '') {
-  ir('s-type', 'push', { sinPila: !!actual && ['s-listen', 's-proc'].includes(actual.id) });
+  const desdeVoz = !!actual && ['s-listen', 's-proc'].includes(actual.id);
+  ir('s-type', desdeVoz ? 'fade' : 'push', { sinPila: desdeVoz });
   const w = $('#writebox'); w.value = texto; contarIdeas();
   setTimeout(() => w.focus(), 350);
 }
@@ -994,6 +1391,8 @@ function toast(texto, boton, accion) {
 // =====================================================================
 // 15 · TOQUES
 // =====================================================================
+/** El interruptor se mueve primero (con su transición) y luego se aplica el cambio */
+function conSw(el, fn) { const sw = el.querySelector('.sw'); if (sw) sw.classList.toggle('on'); vib(); setTimeout(fn, sw ? 280 : 0); }
 const ACT = {
   ajustes: () => ir('s-aj', 'push'),
   atras: () => atras(),
@@ -1002,8 +1401,8 @@ const ACT = {
   escribir: () => abrirEscribir(),
   cosas: () => abrirCosas(),
   'cerrar-cosas': () => cerrarHoja('sh-cosas'),
-  'abrir-cat': el => { S.cat = el.dataset.cat; H.lista.fut = []; ir('s-list', 'push'); },
-  cat: el => cambiarCat(el.dataset.cat),
+  'abrir-cat': el => abrirCajon(el),
+  cat: el => irACat(el.dataset.cat),
   hecho: el => marcarHecho(el.dataset.id, el),
   editar: el => abrirIdea({ tipo: 'guardada', id: el.dataset.id }),
   'editar-borrador': el => abrirIdea({ tipo: 'borrador', k: +el.dataset.k }),
@@ -1030,9 +1429,9 @@ const ACT = {
   'error-escribir': () => abrirEscribir((S.entrada && (S.entrada.texto || S.entrada.textoVivo)) || ''),
   reintentar: () => { if (S.entrada) procesar(S.entrada); else irInicio(); },
   guardar: () => guardarBorrador(),
-  descartar: () => { S.borrador = null; S.entrada = null; irInicio(); toast('Descartado.'); },
-  tema: el => { S.local.tema = el.dataset.v; persist(); aplicarTema(true); pintarAjustes(); },
-  'carpetas-on': () => { S.local.carpetasOn = !S.local.carpetasOn; persist(); pintarAjustes(); pintarPermisos(); },
+  descartar: () => { afinadoN++; marcaAfinando(false); S.borrador = null; S.entrada = null; irInicio(); toast('Descartado.'); },
+  tema: el => { $$('#aj-body .seg button').forEach(b => b.classList.toggle('on', b === el)); S.local.tema = el.dataset.v; persist(); aplicarTema(true); },
+  'carpetas-on': el => conSw(el, () => { S.local.carpetasOn = !S.local.carpetasOn; persist(); pintarAjustes(); pintarPermisos(); }),
   carpeta: el => {
     const k = +el.dataset.k, viejo = S.carpetas[k];
     const nuevo = prompt(`Cambia el nombre de «${viejo}».\nDéjalo vacío para quitar la carpeta.`, viejo);
@@ -1050,9 +1449,9 @@ const ACT = {
   },
   push: async () => { await activarAvisos(); pintarAjustes(); },
   'probar-aviso': async () => { try { await api('probarAviso'); toast('Enviado. Te llegará en unos segundos.'); } catch (e) { toast('No ha salido: ' + e.message); } },
-  'aviso-suave': () => guardarAjustes({ avisoSuaveDias: S.ajustes.avisoSuaveDias > 0 ? 0 : 3 }),
-  'alarma-cal': () => guardarAjustes({ alarmaCalendario: !S.ajustes.alarmaCalendario }),
-  vivo: () => { S.local.vivo = !S.local.vivo; persist(); pintarAjustes(); },
+  'aviso-suave': el => conSw(el, () => guardarAjustes({ avisoSuaveDias: S.ajustes.avisoSuaveDias > 0 ? 0 : 3 })),
+  'alarma-cal': el => conSw(el, () => guardarAjustes({ alarmaCalendario: !S.ajustes.alarmaCalendario })),
+  vivo: el => conSw(el, () => { S.local.vivo = !S.local.vivo; persist(); pintarAjustes(); }),
   cuenta: async () => {
     if (S.cfg) {
       if (confirm('¿Desconectar Posso de tu Google en este iPhone? Tus cosas siguen en tu Drive.')) { S.cfg = null; S.ideas = []; S.outbox = []; persist(); cfgParaSW(); pintarAjustes(); }
@@ -1084,12 +1483,83 @@ const ACT = {
     catch (e) { toast('Sin micrófono. Siempre puedes escribir.'); }
     persist(); pintarPermisos();
   },
-  'perm-avisos': async () => { await activarAvisos(); pintarPermisos(); }
+  'perm-avisos': async () => { await activarAvisos(); pintarPermisos(); },
+  // nuevo
+  foto: () => $('#foto-tareas').click(),
+  grupo: el => { S.grupo = el.dataset.v; vib(); const p = paneActual(); if (p) { p.innerHTML = paneHTML(S.cat); p.querySelectorAll('[data-gem]').forEach(pintarGema); const it = p.querySelector('.items'); if (it && !reduceMotion()) { [...it.children].forEach((e, k) => e.style.setProperty('--i', Math.min(k, 8))); it.classList.add('enter'); } } },
+  item: (el, e) => { e.stopPropagation(); marcarItem(el.dataset.id || (ideaActual() || {}).id, el.dataset.item, el); },
+  'item-quitar': el => { const i = ideaActual(); cambiarItems((i.items || []).filter(x => x.id !== el.dataset.item)); },
+  'item-add': () => {
+    const inp = $('#item-nuevo'), v = inp.value.trim(); if (!v) return;
+    const i = ideaActual();
+    const zona = esCompra(i) ? ((S.habituales.find(h => norm(h.t) === norm(v)) || {}).zona || 'Otros') : undefined;
+    cambiarItems((i.items || []).concat([{ id: uid(), t: cap(v), hecho: false, zona }]));
+    setTimeout(() => { const n = $('#item-nuevo'); if (n) n.focus(); }, 30);
+  },
+  habitual: el => {
+    const t = el.dataset.t, ya = S.habituales.some(h => norm(h.t) === norm(t));
+    S.habituales = ya ? S.habituales.filter(h => norm(h.t) !== norm(t)) : S.habituales.concat([{ t, zona: el.dataset.z || 'Otros' }]);
+    persist(); if (S.cfg) encolar({ accion: 'habituales', habituales: S.habituales });
+    el.classList.toggle('on', !ya); el.innerHTML = ICO2.star(!ya); vib();
+    toast(ya ? 'Ya no es de siempre.' : 'Guardado como de siempre.');
+  },
+  'habitual-add': el => { const i = ideaActual(); cambiarItems((i.items || []).concat([{ id: uid(), t: el.dataset.t, hecho: false, zona: el.dataset.z || 'Otros' }])); },
+  'compartir-lista': () => compartirLista(ideaActual()),
+  'idea-repetir': el => {
+    const i = ideaActual(), r = reglaPara(el.dataset.v, i);
+    const cambios = { repetir: r };
+    if (r) cambios.aviso = siguienteRepeticion(r, isoLocal(new Date()), true);
+    cambiarIdea(cambios);
+    $('#idea-rec') && cambiaTexto($('#idea-rec'), (ideaActual().aviso ? cap(fechaCorta(ideaActual().aviso)) : 'No') + ' ›');
+  },
+  quien: el => {
+    const c = ideaActual().contactos[+el.dataset.k];
+    el.parentElement.innerHTML = c.opciones.map(p => `<a class="actb" href="tel:${esc(tel(p.tel))}">${ICO2.phone}${esc(p.nombre)}</a><a class="actb" href="https://wa.me/${esc(tel(p.tel).replace('+', ''))}" target="_blank" rel="noopener">${ICO2.wa}WhatsApp</a>`).join('');
+  },
+  'ver-foto': el => verFoto(el.dataset.f),
+  hechas: () => ir('s-hecho', 'push'),
+  deshecho: el => { const id = el.dataset.id; const ck = el.querySelector('.ck'); if (ck) ck.classList.remove('done'); vib();
+    setTimeout(() => { const i = buscar(id); hacer(OP.cambiar(id, i.items && i.items.length ? { hecho: false, items: i.items.map(x => Object.assign({}, x, { hecho: false })) } : { hecho: false })); pintarHechas(); toast('Vuelve a ' + NOMBRE[i.cat] + '.'); }, 350); },
+  'olv-mas': el => { const id = el.dataset.id; hacer(OP.cambiar(id, { pospuesto: Date.now() })); quitarFilaOlvidar(id); },
+  'olv-borrar': el => { const id = el.dataset.id; hacer(OP.quitar(id)); quitarFilaOlvidar(id); toast('Borrado', 'Deshacer', () => deshacer('lista')); },
+  'olv-borrar-todo': () => { const ids = olvidarViejas().map(i => i.id); const ops = ids.map(id => OP.quitar(id));
+    hacer({ do: () => ops.forEach(o => o.do()), undo: () => ops.forEach(o => o.undo()) }); cerrarTarjetaOlvidar(); toast('Borrado', 'Deshacer', () => deshacer('lista')); },
+  personas: () => ir('s-per', 'push'),
+  alumnos: async () => {
+    if (!S.cfg) return toast('Conecta tu Google primero.');
+    try { const r = await api('hola'); alert(`Tienes ${r.alumnos} alumnos en la pestaña «Alumnos» de tu hoja de Posso.\n\nSolo sirven para el modo cuidado: esos nombres se quitan de los correos antes de que lleguen a Gemini, y nunca se envían.\n\nPara añadirlos, abre la hoja y pega un nombre por fila.`); if (r.hoja) window.open(r.hoja, '_blank'); }
+    catch (e) { toast(e.message); }
+  },
+  correo: el => conSw(el, () => guardarAjustes({ correoActivo: S.ajustes.correoActivo === false })),
+  repaso: el => conSw(el, () => guardarAjustes({ repasoDomingo: S.ajustes.repasoDomingo === false })),
+  puente: () => alert('Para cada cuenta de Gmail extra (máster, @educacion.navarra.es…) se instala una vez el mini-script «Posso puente». Los pasos están en la guía de instalación, apartado «Posso puente».\n\nEn @educacion.navarra.es usa el modo cuidado: solo llega el asunto, sin nombres de alumnos.'),
+  persona: el => {
+    const p = personasCache.find(x => x.nombre === el.dataset.n); if (!p) return;
+    const nombre = prompt('Nombre (déjalo vacío para quitar a esta persona)', p.nombre); if (nombre === null) return;
+    if (!nombre.trim()) { personasCache = personasCache.filter(x => x !== p); return guardarPersonasYa(); }
+    const alias = prompt('Cómo le llamas al hablar (separado por comas)', p.alias); if (alias === null) return;
+    const t = prompt('Teléfono', p.tel); if (t === null) return;
+    Object.assign(p, { nombre: nombre.trim(), alias: alias.trim(), tel: t.trim() }); guardarPersonasYa();
+  },
+  'persona-nueva': () => {
+    const nombre = (prompt('Nombre') || '').trim(); if (!nombre) return;
+    const alias = (prompt('Cómo le llamas al hablar (ama, aita, hermano…). Separado por comas.') || '').trim();
+    const t = (prompt('Teléfono') || '').trim();
+    personasCache.push({ nombre, alias, tel: t }); guardarPersonasYa();
+  },
+  'importar-contactos': () => importarContactos(),
+  'imp-todos': () => $$('#imp-lista input:not([disabled])').forEach(c => c.checked = true),
+  'imp-ok': () => {
+    const cs = $('#per-body')._contactos || [];
+    $$('#imp-lista input:checked:not([disabled])').forEach(c => { const x = cs[+c.dataset.k]; personasCache.push({ nombre: x.nombre, alias: '', tel: x.tel }); });
+    guardarPersonasYa();
+  }
 };
 
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
   if (!el || el.closest('[disabled]') || arrastrando) return;
+  if (el.tagName === 'A') return;
   const f = ACT[el.dataset.act]; if (f) f(el, e);
 });
 $('#writebox').addEventListener('input', contarIdeas);
@@ -1098,61 +1568,501 @@ $('#writebox').addEventListener('input', contarIdeas);
 document.addEventListener('pointerdown', e => { const g = e.target.closest('.gem.tap'); if (g) g.classList.add('press'); });
 ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => document.addEventListener(t, () => $$('.gem.press').forEach(g => g.classList.remove('press'))));
 
-// ---------- gestos: deslizar filas, cambiar de categoría, arrastrar hojas, subir en inicio ----------
+// ---------- gestos ----------
+// · deslizar una fila: a la izquierda borra; en Olvidar, a la derecha pasa a Hoy
+// · deslizar en cualquier parte de una categoría: pasa a la de al lado, como tarjetas
+// · hojas: siguen al dedo; se cierran arrastrando hacia abajo desde cualquier parte si su contenido está arriba del todo
+// · inicio: arrastrar hacia arriba abre «Tus cosas» siguiendo el dedo
 let arrastrando = false;
 (function gestos() {
   let g = null;
+  const BORDE = 28;
+  const velocidad = () => {               // px/ms en el último tramo
+    const s = g.muestras, a = s[0], b = s[s.length - 1];
+    const dt = Math.max(1, b.t - a.t);
+    return { vx: (b.x - a.x) / dt, vy: (b.y - a.y) / dt };
+  };
+  const scrollArriba = el => !el || el.scrollTop <= 0;
+
   document.addEventListener('pointerdown', e => {
-    if (e.button > 0) return;
-    const drag = e.target.closest('[data-drag]');
-    const front = e.target.closest('#s-list .task .front');
-    const cat = !front && e.target.closest('#s-list [data-swipecat]');
-    const home = !drag && actual && actual.id === 's-home' && !$('#sh-cosas').classList.contains('on') && !e.target.closest('.gem,.kbd,.ajustes-btn');
-    if (!drag && !front && !cat && !home) return;
-    g = { x: e.clientX, y: e.clientY, dx: 0, dy: 0, eje: null, drag, front, cat, home, t: Date.now() };
+    if (e.button > 0 || deslizando) return;
+    const t = e.target;
+    if (t.closest('input,textarea,select')) return;
+    const enApp = $('#app').getBoundingClientRect();
+    const x = e.clientX - enApp.left;
+    g = { x: e.clientX, y: e.clientY, dx: 0, dy: 0, eje: null, modo: null, t: Date.now(), muestras: [{ x: e.clientX, y: e.clientY, t: Date.now() }] };
+    // ¿qué puede mover este dedo?
+    const cosas = $('#sh-cosas'), idea = $('#sh-idea');
+    if (idea.classList.contains('on') && t.closest('#sh-idea')) { g.hoja = { el: idea, scrim: $('#scrim-idea'), scroll: idea, cerrar: () => cerrarIdea() }; return; }
+    if (cosas.classList.contains('on') && t.closest('#sh-cosas')) { g.hoja = { el: cosas, scrim: $('#scrim-cosas'), scroll: null, cerrar: () => cerrarHoja('sh-cosas') }; return; }
+    const scr = t.closest('.screen.hojascr');
+    if (scr && scr === actual) { g.hoja = { el: scr, scrim: $('#scrim-scr'), scroll: scr.querySelector('.scroll'), pantalla: true }; return; }
+    if (actual && actual.id === 's-home' && !cosas.classList.contains('on') && !t.closest('.gem,.kbd,.ajustes-btn')) { g.abrirCosas = true; return; }
+    if (actual && actual.id === 's-list' && t.closest('#list-body')) {
+      g.lista = true;
+      g.borde = x < BORDE || x > enApp.width - BORDE;
+      g.front = !g.borde && t.closest('.task .front');
+    }
   }, { passive: true });
+
   document.addEventListener('pointermove', e => {
     if (!g) return;
     g.dx = e.clientX - g.x; g.dy = e.clientY - g.y;
-    if (!g.eje && Math.hypot(g.dx, g.dy) > 8) g.eje = Math.abs(g.dx) > Math.abs(g.dy) ? 'x' : 'y';
-    if (g.drag && g.eje === 'y') {
-      const sh = $('#' + g.drag.dataset.drag); sh.classList.add('drag');
-      sh.style.transform = `translateY(${Math.max(0, g.dy)}px)`; arrastrando = true;
+    g.muestras.push({ x: e.clientX, y: e.clientY, t: Date.now() });
+    if (g.muestras.length > 6) g.muestras.shift();
+    if (!g.eje) {
+      if (Math.hypot(g.dx, g.dy) < 8) return;
+      g.eje = Math.abs(g.dx) > Math.abs(g.dy) ? 'x' : 'y';     // la dirección se decide en los primeros píxeles
+      // qué gesto es
+      if (g.hoja && g.eje === 'y' && g.dy > 0 && scrollArriba(g.hoja.scroll)) g.modo = 'hoja';
+      else if (g.abrirCosas && g.eje === 'y' && g.dy < 0) {
+        g.modo = 'subir';
+        pintarCajones(false);
+        const sh = $('#sh-cosas'); sh.classList.add('drag'); g.alto = sh.offsetHeight;
+      }
+      else if (g.lista && g.eje === 'x') {
+        const olv = g.front && g.front.parentElement.classList.contains('olv');
+        if (g.front && (g.dx < 0 || olv)) g.modo = 'fila';
+        else {
+          g.modo = 'cat';
+          const body = $('#list-body'); g.w = body.clientWidth; g.k = CATS.indexOf(S.cat);
+          g.cur = paneActual();
+          body.querySelectorAll('.pane').forEach(p => { if (p !== g.cur) p.remove(); });
+          g.prev = g.k > 0 ? nuevoPane(CATS[g.k - 1]) : null;
+          g.next = g.k < CATS.length - 1 ? nuevoPane(CATS[g.k + 1]) : null;
+          [g.prev, g.next].forEach(p => p && body.appendChild(p));
+        }
+      }
+      if (g.modo) arrastrando = true;
     }
-    if (g.front && g.eje === 'x') {
+    if (g.modo === 'hoja') {
+      const d = Math.max(0, g.dy), el = g.hoja.el;
+      el.classList.add('drag'); el.style.transition = 'none';
+      el.style.transform = `translateY(${d}px)`;
+      g.hoja.scrim.style.transition = 'none';
+      g.hoja.scrim.style.opacity = String(Math.max(0, 1 - d / (el.offsetHeight || 600)));
+    }
+    if (g.modo === 'subir') {
+      const sh = $('#sh-cosas'), sc = $('#scrim-cosas');
+      const y = Math.max(0, g.alto + Math.min(0, g.dy));
+      sh.style.transform = `translateY(${y}px)`;
+      sc.classList.add('on'); sc.style.transition = 'none'; sc.style.opacity = String(1 - y / g.alto);
+    }
+    if (g.modo === 'fila') {
       const olv = g.front.parentElement.classList.contains('olv');
       const dx = olv ? g.dx : Math.min(0, g.dx);
-      g.front.style.transform = `translateX(${dx}px)`; arrastrando = true;
+      g.front.style.transform = `translateX(${dx}px)`;
       const del = g.front.parentElement.querySelector('.under.del'), go = g.front.parentElement.querySelector('.under.go');
-      if (del) del.style.opacity = dx < 0 ? 1 : 0;
-      if (go) go.style.opacity = dx > 0 ? 1 : 0;
+      if (del) del.style.opacity = dx < 0 ? Math.min(1, -dx / 40) : 0;
+      if (go) go.style.opacity = dx > 0 ? Math.min(1, dx / 40) : 0;
+    }
+    if (g.modo === 'cat') {
+      let off = g.dx;
+      if ((off > 0 && !g.prev) || (off < 0 && !g.next)) off = off * .28;   // resistencia en los extremos
+      g.off = off;
+      g.cur.style.transform = `translateX(${off}px)`;
+      if (g.prev) g.prev.style.transform = `translateX(${off - g.w}px)`;
+      if (g.next) g.next.style.transform = `translateX(${off + g.w}px)`;
+      ponSwitcher(Math.max(0, Math.min(3, g.k - off / g.w)), false);
     }
   }, { passive: true });
+
   const fin = () => {
     if (!g) return;
-    const { dx, dy, eje } = g, rapido = Date.now() - g.t < 300;
-    if (g.drag) {
-      const sh = $('#' + g.drag.dataset.drag); sh.classList.remove('drag'); sh.style.transform = '';
-      if (eje === 'y' && (dy > 110 || (rapido && dy > 40))) g.drag.dataset.drag === 'sh-idea' ? cerrarIdea() : cerrarHoja('sh-cosas');
+    const v = g.muestras.length > 1 ? velocidad() : { vx: 0, vy: 0 };
+    const gg = g; g = null;
+    setTimeout(() => arrastrando = false, 40);
+    if (!gg.modo) return;
+
+    if (gg.modo === 'hoja') {
+      const el = gg.hoja.el, alto = el.offsetHeight || 600;
+      const cierra = gg.dy > alto * .28 || v.vy > .55;
+      el.classList.remove('drag'); el.style.transition = ''; gg.hoja.scrim.style.transition = '';
+      if (cierra) {
+        vib();
+        if (gg.hoja.pantalla) {
+          el.style.transition = 'transform .3s cubic-bezier(.4,0,.6,1)';
+          requestAnimationFrame(() => { el.style.transform = 'translateY(105%)'; });
+          gg.hoja.scrim.style.opacity = '';
+          atras({ yaFuera: true });
+        } else { gg.hoja.scrim.style.opacity = ''; gg.hoja.cerrar(); }
+      } else {
+        el.style.transition = 'transform .45s cubic-bezier(.3,1.25,.5,1)';
+        el.style.transform = '';
+        gg.hoja.scrim.style.opacity = '';
+        setTimeout(() => { el.style.transition = ''; }, 460);
+      }
     }
-    if (g.front && eje === 'x') {
-      const task = g.front.parentElement, id = task.dataset.id;
-      g.front.classList.add('snap');
-      if (dx < -90) { g.front.style.transform = 'translateX(-110%)'; vib(); borrarFila(task, id); }
-      else if (dx > 90 && task.classList.contains('olv')) { g.front.style.transform = 'translateX(110%)'; vib(); soltarOlvidar(task, id); }
-      else { g.front.style.transform = ''; setTimeout(() => task.querySelectorAll('.under').forEach(u => u.style.opacity = 0), 300); }
+    if (gg.modo === 'subir') {
+      const sh = $('#sh-cosas'), sc = $('#scrim-cosas');
+      const abre = -gg.dy > gg.alto * .22 || v.vy < -.45;
+      sh.classList.remove('drag'); sc.style.transition = '';
+      sh.style.transform = ''; sc.style.opacity = '';
+      if (abre) { sh.classList.add('on'); vib(); const d = $('#drawers'); d.classList.remove('enter'); void d.offsetWidth; d.classList.add('enter'); }
+      else sc.classList.remove('on');
     }
-    if (g.cat && eje === 'x' && Math.abs(dx) > 60) {
-      const k = CATS.indexOf(S.cat) + (dx < 0 ? 1 : -1);
-      if (k >= 0 && k < CATS.length) cambiarCat(CATS[k], dx < 0 ? 1 : -1);
+    if (gg.modo === 'fila') {
+      const task = gg.front.parentElement, id = task.dataset.id;
+      gg.front.classList.add('snap');
+      if (gg.dx < -90 || (gg.dx < -40 && v.vx < -.6)) { gg.front.style.transform = 'translateX(-110%)'; vib(); borrarFila(task, id); }
+      else if (task.classList.contains('olv') && (gg.dx > 90 || (gg.dx > 40 && v.vx > .6))) { gg.front.style.transform = 'translateX(110%)'; vib(); soltarOlvidar(task, id); }
+      else { gg.front.style.transform = ''; setTimeout(() => { gg.front.classList.remove('snap'); task.querySelectorAll('.under').forEach(u => u.style.opacity = 0); }, 300); }
     }
-    if (g.home && eje === 'y' && dy < -60) abrirCosas();
-    g = null;
-    setTimeout(() => arrastrando = false, 30);
+    if (gg.modo === 'cat') {
+      const off = gg.off || 0, w = gg.w;
+      let go = 0;
+      if ((off < -w * .22 || (v.vx < -.4 && off < -20)) && gg.next) go = 1;
+      else if ((off > w * .22 || (v.vx > .4 && off > 20)) && gg.prev) go = -1;
+      if (go) {
+        const sig = go > 0 ? gg.next : gg.prev, otro = go > 0 ? gg.prev : gg.next;
+        if (otro) otro.remove();
+        // la animación sigue desde donde lo dejó el dedo
+        gg.cur.style.transform = ''; sig.style.transform = '';
+        irACat(CATS[gg.k + go], off, v.vx);
+      } else {
+        // vuelve a su sitio
+        const ease = 'cubic-bezier(.3,1.2,.5,1)';
+        gg.cur.animate([{ transform: `translateX(${off}px)` }, { transform: 'translateX(0)' }], { duration: 360, easing: ease });
+        gg.cur.style.transform = '';
+        [gg.prev, gg.next].forEach((p, i) => {
+          if (!p) return;
+          const base = i === 0 ? -w : w;
+          p.style.transform = `translateX(${base}px)`;
+          p.animate([{ transform: `translateX(${off + base}px)` }, { transform: `translateX(${base}px)` }], { duration: 360, easing: ease })
+            .finished.then(() => p.remove()).catch(() => p.remove());
+        });
+        ponSwitcher(gg.k, true);
+      }
+    }
   };
   document.addEventListener('pointerup', fin);
   document.addEventListener('pointercancel', fin);
 })();
+
+// =====================================================================
+// 15b · LISTAS, PERSONAS, LUGARES, FOTOS, REPETICIONES, COMPARTIR…
+// =====================================================================
+
+// ---------- títulos con palabra clave, grupo, personas y rayo ----------
+const BOLT = '<svg class="bolt" width="9" height="13" viewBox="0 0 9 13" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" aria-label="Rápida"><path d="M5.2 1L1.2 7.3h3l-.7 4.7 4.2-6.6H4.6z"/></svg>';
+const ICO2 = {
+  phone: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 1.8h2.3l1.1 3-1.5 1a7.5 7.5 0 0 0 3.6 3.6l1-1.5 3 1.1v2.3a1.4 1.4 0 0 1-1.5 1.4A11.6 11.6 0 0 1 1.8 3.3a1.4 1.4 0 0 1 1.4-1.5z"/></svg>',
+  wa: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.3 13.7l.8-2.8A6.2 6.2 0 1 1 5.4 13z"/><path d="M6 5.6c0 2.3 1.9 4.3 4.3 4.4l.8-1-1.4-.7-.6.6a3.4 3.4 0 0 1-1.7-1.7l.6-.6-.7-1.4-1 .4z"/></svg>',
+  pin: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 14.5s4.8-4.4 4.8-8.1a4.8 4.8 0 0 0-9.6 0c0 3.7 4.8 8.1 4.8 8.1z"/><circle cx="8" cy="6.4" r="1.7"/></svg>',
+  cam: '<svg width="19" height="16" viewBox="0 0 19 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M1.5 4.8a1.6 1.6 0 0 1 1.6-1.6h2.5L7 1.3h5l1.4 1.9h2.5a1.6 1.6 0 0 1 1.6 1.6v8.3a1.6 1.6 0 0 1-1.6 1.6H3.1a1.6 1.6 0 0 1-1.6-1.6z"/><circle cx="9.5" cy="8.6" r="3"/></svg>',
+  rep: '<svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M10.2 5.2A4.3 4.3 0 0 0 2.4 3.6M1.8 6.8a4.3 4.3 0 0 0 7.8 1.6"/><path d="M2.2 1.4v2.4h2.4M9.8 10.6V8.2H7.4"/></svg>',
+  nota: '<svg width="11" height="12" viewBox="0 0 11 12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"><path d="M1.5 1h5.5l2.5 2.5V11h-8z"/><path d="M3.5 5.5h4M3.5 7.5h4M3.5 9.3h2.5" stroke-linecap="round"/></svg>',
+  link: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6.6 9.4l2.8-2.8M7 4.5l1-1a2.8 2.8 0 0 1 4 4l-1 1M9 11.5l-1 1a2.8 2.8 0 0 1-4-4l1-1"/></svg>',
+  share: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10V1.8M5 4.6l3-2.9 3 2.9M3.5 7.5v5.3a1.2 1.2 0 0 0 1.2 1.2h6.6a1.2 1.2 0 0 0 1.2-1.2V7.5"/></svg>',
+  star: on => `<svg width="15" height="15" viewBox="0 0 16 16" fill="${on ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M8 1.6l1.9 4 4.3.5-3.2 3 .9 4.3L8 11.3l-3.9 2.1.9-4.3-3.2-3 4.3-.5z"/></svg>`,
+  x: '<svg width="10" height="10" viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 2l6 6M8 2L2 8"/></svg>'
+};
+
+/** Nombres de personas destacados dentro del título */
+function marcarPersonas(txt, i) {
+  let h = esc(txt);
+  (i.personas || []).forEach(p => {
+    if (!p || p.length < 2) return;
+    const re = new RegExp('(^|[^\\wáéíóúñ])(' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')(?=$|[^\\wáéíóúñ])', 'gi');
+    h = h.replace(re, '$1<span class="per">$2</span>');
+  });
+  return h;
+}
+function tituloHTML(i, corto) {
+  const grp = i.grupo ? `<span class="grp">${esc(i.grupo)}</span>` : '';
+  let t;
+  if (i.tipo === 'lista') {
+    const n = (i.items || []).filter(x => !x.hecho).length;
+    t = `<b class="kw">${esc(i.clave || i.titulo)}:</b>` + (corto ? ` <span class="kwn">${n ? (n === 1 ? '1 cosa' : n + ' cosas') : 'todo hecho'}</span>` : '');
+  } else if (i.tipo === 'receta') {
+    t = `<b class="kw">${esc(i.titulo)}</b>`;
+  } else t = marcarPersonas(i.titulo, i);
+  return grp + t + (i.rapida ? ' ' + BOLT : '') + (i.tipo === 'nota' ? ' <span class="notai">' + ICO2.nota + '</span>' : '');
+}
+function textoRepetir(r) {
+  if (!r) return '';
+  const D = ['', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'], h = r.hora || '9:00';
+  const hh = h.replace(/^0/, '');
+  if (r.tipo === 'diaria') return 'Cada día ' + hh;
+  if (r.tipo === 'laborables') return 'Lun–Vie ' + hh;
+  if (r.tipo === 'semanal') return (r.dias || [1]).map(d => D[d]).join(', ') + ' ' + hh;
+  if (r.tipo === 'cadaN') return 'Cada ' + (r.n || 1) + ' días';
+  if (r.tipo === 'mensualDia') return 'Día ' + (r.dia || 1) + ' de cada mes';
+  if (r.tipo === 'mensualOrdinal') return (r.ordinal === -1 ? 'Último ' : ['', '1.er ', '2.º ', '3.er ', '4.º '][r.ordinal || 1]) + D[r.diaSemana || 1].toLowerCase() + ' del mes';
+  return '';
+}
+const fechaDia = s => { const d = deIso(s.length === 10 ? s + 'T09:00' : s); return d.getDate() + ' ' + MESES[d.getMonth()]; };
+
+// ---------- sublistas ----------
+const ORDEN_ZONAS = ['Frutería', 'Panadería', 'Carnicería y charcutería', 'Pescadería', 'Lácteos y huevos', 'Despensa',
+  'Congelados', 'Bebidas', 'Droguería y limpieza', 'Higiene', 'Mascotas y acuario', 'Otros'];
+const esCompra = i => i.tipo === 'lista' && /compra/i.test(i.clave || i.titulo);
+function subHTML(i, editable) {
+  const items = i.items || [];
+  if (!items.length) return editable ? '' : '';
+  const fila = x => `<div class="si${x.hecho ? ' done' : ''}" data-item="${esc(x.id)}">
+      <button class="subck" data-act="item" data-id="${i.id}" data-item="${esc(x.id)}" aria-label="Marcar">${check(i.cat === 'olvidar' ? 'hoy' : catDe(i), x.hecho, 17)}</button>
+      <span class="st">${esc(x.t)}</span>
+      ${editable && esCompra(i) ? `<button class="star${S.habituales.some(h => norm(h.t) === norm(x.t)) ? ' on' : ''}" data-act="habitual" data-t="${esc(x.t)}" data-z="${esc(x.zona || '')}" aria-label="De siempre">${ICO2.star(S.habituales.some(h => norm(h.t) === norm(x.t)))}</button>` : ''}
+      ${editable ? `<button class="subx" data-act="item-quitar" data-item="${esc(x.id)}" aria-label="Quitar">${ICO2.x}</button>` : ''}</div>`;
+  if (esCompra(i)) {
+    const g = {};
+    items.forEach(x => (g[x.zona || 'Otros'] = g[x.zona || 'Otros'] || []).push(x));
+    return Object.keys(g).sort((a, b) => ORDEN_ZONAS.indexOf(a) - ORDEN_ZONAS.indexOf(b))
+      .map(z => `<div class="zona">${esc(z)}</div>` + g[z].sort((a, b) => a.hecho - b.hecho).map(fila).join('')).join('');
+  }
+  return items.map(fila).join('');
+}
+const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/^\d+\s*(x\s*)?/, '').trim();
+
+function marcarItem(id, itemId, btn) {
+  const i = buscar(id); if (!i) return;
+  const x = (i.items || []).find(y => y.id === itemId); if (!x) return;
+  const nuevo = !x.hecho;
+  const fila = btn && btn.closest('.si');
+  if (fila) { fila.classList.toggle('done', nuevo); const ck = fila.querySelector('.ck'); if (ck) { ck.classList.toggle('done', nuevo); ck.classList.remove('pop'); void ck.offsetWidth; ck.classList.add('pop'); } }
+  vib();
+  const antes = JSON.stringify(i.items);
+  const aplicar = (items, hecho) => {
+    const k = buscar(id); if (!k) return;
+    k.items = items;
+    if (!k.repetir) { k.hecho = hecho; k.hechoEn = hecho ? Date.now() : 0; }
+    persist();
+  };
+  const items = (i.items || []).map(y => y.id === itemId ? Object.assign({}, y, { hecho: nuevo }) : y);
+  const todos = items.every(y => y.hecho);
+  const op = {
+    do: () => { aplicar(items, todos); encolar({ accion: 'marcarItem', id, itemId, hecho: nuevo }); },
+    undo: () => { aplicar(JSON.parse(antes), false); encolar({ accion: 'marcarItem', id, itemId, hecho: !nuevo }); }
+  };
+  setTimeout(() => {
+    hacer(op);
+    if ($('#sh-idea').classList.contains('on')) pintarSubEnHoja();
+    if (actual && actual.id === 's-list') refrescarLista();
+    if (todos && !i.repetir) toast(esCompra(i) ? 'Compra hecha.' : 'Una menos.');
+  }, 380);
+}
+
+// ---------- hoja de una idea: piezas nuevas ----------
+function tel(n) { let d = String(n || '').replace(/[^\d+]/g, ''); if (/^\d{9}$/.test(d)) d = '+34' + d; return d; }
+function contactosHTML(i) {
+  return (i.contactos || []).map((c, k) => {
+    if (!c.opciones || !c.opciones.length) return `<div class="hint">No tengo el teléfono de «${esc(c.dicho)}». Lo puedes añadir en Ajustes › Personas.</div>`;
+    if (c.opciones.length === 1) {
+      const p = c.opciones[0];
+      return `<div class="acts"><a class="actb" href="tel:${esc(tel(p.tel))}">${ICO2.phone}Llamar a ${esc(p.nombre)}</a>` +
+        `<a class="actb" href="https://wa.me/${esc(tel(p.tel).replace('+', ''))}" target="_blank" rel="noopener">${ICO2.wa}WhatsApp</a></div>`;
+    }
+    return `<div class="acts"><button class="actb" data-act="quien" data-k="${k}">${ICO2.phone}¿A quién: ${c.opciones.map(o => esc(o.nombre)).join(' o ')}?</button></div>`;
+  }).join('');
+}
+function mapsHTML(i) {
+  if (!i.lugar || !i.lugar.q) return '';
+  const q = encodeURIComponent(i.lugar.q);
+  return `<div class="acts"><a class="actb" href="https://www.google.com/maps/search/?api=1&query=${q}" target="_blank" rel="noopener">${ICO2.pin}${esc(i.lugar.tipo === 'sitio' ? i.lugar.q + ' más cercana' : i.lugar.q)}</a></div>`;
+}
+function fotosHTML(i, guardada) {
+  const f = i.fotos || [];
+  return `<div class="thumbs">${f.map(x => `<button class="thumb" data-act="ver-foto" data-f="${esc(x.id)}" style="background-image:url(${x.mini})" aria-label="Ver foto"></button>`).join('')}
+    ${guardada && f.length < 3 ? `<label class="thumb add">${ICO2.cam}<input type="file" accept="image/*" id="foto-in" hidden></label>` : ''}</div>`;
+}
+function pintarSubEnHoja() {
+  const i = ideaActual(), el = $('#idea-sub'); if (!i || !el) return;
+  el.innerHTML = subHTML(i, true) + `<div class="si add"><input id="item-nuevo" placeholder="Añadir${esCompra(i) ? ' a la compra' : ''}…" enterkeyhint="done"><button data-act="item-add" class="subadd">Añadir</button></div>` + habitualesHTML(i);
+  const inp = $('#item-nuevo'); if (inp) inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ACT['item-add'](); } });
+}
+function habitualesHTML(i) {
+  if (!esCompra(i) || !S.habituales.length) return '';
+  const faltan = S.habituales.filter(h => !(i.items || []).some(x => !x.hecho && norm(x.t) === norm(h.t)));
+  if (!faltan.length) return '';
+  return `<div class="cap" style="margin:14px 0 8px">De siempre</div><div class="chips">${faltan.map(h =>
+    `<button class="csel" data-act="habitual-add" data-t="${esc(h.t)}" data-z="${esc(h.zona || '')}">+ ${esc(h.t)}</button>`).join('')}</div>`;
+}
+function cambiarItems(items) {
+  const r = S.idea, i = ideaActual(); if (!i) return;
+  const todos = items.length && items.every(x => x.hecho);
+  if (r.tipo === 'guardada') hacer(OP.cambiar(i.id, { items, hecho: !i.repetir && todos }));
+  else { borradorPaso(); i.items = items; }
+  pintarSubEnHoja();
+  if (r.tipo === 'borrador' && actual && actual.id === 's-res') pintarResultado();
+}
+function repetirHTML(i) {
+  const ops = [['', 'No'], ['diaria', 'Cada día'], ['laborables', 'De lunes a viernes'], ['semanal', 'Cada semana'], ['cadaN', 'Cada 15 días'], ['mensualOrdinal', 'Cada mes']];
+  const t = i.repetir ? i.repetir.tipo : '';
+  return `<div class="cap" style="margin:14px 0 8px">Repetir</div><div class="chips">${ops.map(([v, txt]) =>
+    `<button class="csel${v === t ? ' on' : ''}" data-act="idea-repetir" data-v="${v}">${txt}</button>`).join('')}</div>
+    ${i.repetir ? `<div class="hint">${ICO2.rep} ${esc(textoRepetir(i.repetir))} · al marcarla vuelve sola la próxima vez.</div>` : ''}`;
+}
+function reglaPara(tipo, i) {
+  if (!tipo) return null;
+  const base = i.aviso ? deIso(i.aviso) : new Date();
+  const hora = i.aviso ? i.aviso.slice(11, 16) : '09:00';
+  const dow = ((base.getDay() + 6) % 7) + 1;
+  if (tipo === 'semanal') return { tipo, dias: [dow], hora };
+  if (tipo === 'cadaN') return { tipo, n: 15, hora };
+  if (tipo === 'mensualOrdinal') return { tipo, ordinal: Math.min(4, Math.ceil(base.getDate() / 7)), diaSemana: dow, hora };
+  return { tipo, hora };
+}
+
+// ---------- marcar hecho una tarea que se repite ----------
+function proximaVez(i) {
+  const ahora = isoLocal(new Date());
+  const desde = i.aviso && i.aviso > ahora ? i.aviso : ahora;
+  return siguienteRepeticion(i.repetir, desde, false);
+}
+
+// ---------- lista compartida por enlace ----------
+async function compartirLista(i) {
+  if (!S.cfg) return toast('Para compartir la lista conecta tu Google.');
+  try {
+    toast('Preparando el enlace…');
+    const r = await api('compartirLista', { id: i.id });
+    const k = buscar(i.id); if (k) { k.compartir = r.token; persist(); }
+    const pend = (i.items || []).filter(x => !x.hecho);
+    const texto = `${i.clave || i.titulo}:\n` + pend.map(x => '• ' + x.t).join('\n') + `\n\nMárcalo aquí mientras compras: ${r.enlace}`;
+    location.href = 'https://wa.me/?text=' + encodeURIComponent(texto);
+  } catch (e) { toast('No he podido crear el enlace: ' + e.message); }
+}
+
+// ---------- fotos ----------
+function reducirImagen(file, lado, calidad) {
+  return new Promise((ok, ko) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const k = Math.min(1, lado / Math.max(img.width, img.height));
+      const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      ok(c.toDataURL('image/jpeg', calidad));
+    };
+    img.onerror = ko; img.src = url;
+  });
+}
+async function anadirFoto(file) {
+  const i = ideaActual(); if (!i || S.idea.tipo !== 'guardada') return;
+  if (!S.cfg) return toast('Para guardar fotos conecta tu Google.');
+  try {
+    toast('Subiendo la foto…');
+    const grande = await reducirImagen(file, 1600, .82), mini = await reducirImagen(file, 220, .6);
+    const r = await api('subirFoto', { id: i.id, data: grande.split(',')[1], mini }, 60000);
+    const k = buscar(i.id); if (k) { k.fotos = r.fotos; persist(); }
+    $('#idea-fotos').innerHTML = fotosHTML(k, true);
+    toast('Foto guardada en tu Drive.');
+  } catch (e) { toast('No he podido subir la foto: ' + e.message); }
+}
+async function verFoto(fotoId) {
+  const v = document.createElement('div'); v.className = 'visor';
+  v.innerHTML = '<div class="visor-in">Cargando…</div>';
+  $('#app').appendChild(v); requestAnimationFrame(() => v.classList.add('on'));
+  v.addEventListener('click', () => { v.classList.remove('on'); setTimeout(() => v.remove(), 300); });
+  try { const r = await api('foto', { fotoId }, 60000); v.innerHTML = `<img src="data:image/jpeg;base64,${r.data}" alt="">`; }
+  catch (e) { v.innerHTML = '<div class="visor-in">No puedo abrir la foto ahora.</div>'; }
+}
+async function fotoATareas(file) {
+  if (!S.cfg) return toast('Para leer fotos necesito tu Google conectado.');
+  const data = await reducirImagen(file, 1800, .85);
+  procesarLento({ imagen: data.split(',')[1] });
+}
+
+// ---------- resumen de una línea en el resultado ----------
+function resumen(ideas) {
+  const tareas = ideas.filter(i => i.tipo === 'tarea' || !i.tipo).length;
+  const partes = [];
+  if (tareas) partes.push(tareas === 1 ? '1 tarea' : tareas + ' tareas');
+  ideas.filter(i => i.tipo === 'lista').forEach(l => {
+    const n = (l.items || []).length, que = (l.clave || l.titulo).toLowerCase();
+    partes.push(l.sumarA ? `sumo ${n} a tu ${que}` : `1 lista de ${que} con ${n} ${n === 1 ? 'cosa' : 'cosas'}`);
+  });
+  const rec = ideas.filter(i => i.tipo === 'receta').length; if (rec) partes.push(rec === 1 ? '1 receta' : rec + ' recetas');
+  const notas = ideas.filter(i => i.tipo === 'nota').length; if (notas) partes.push(notas === 1 ? '1 nota' : notas + ' notas');
+  const avisos = ideas.filter(i => i.aviso).sort((a, b) => a.aviso < b.aviso ? -1 : 1);
+  if (avisos.length) partes.push((avisos.length === 1 ? '1 aviso ' : avisos.length + ' avisos, el primero ') + fechaCorta(avisos[0].aviso, true).replace(/ a las.*/, '').replace(/^(lunes|martes|miércoles|jueves|viernes|sábado|domingo|\d)/, 'el $1'));
+  if (!partes.length) return '';
+  const ult = partes.pop();
+  return cap(partes.length ? partes.join(', ') + ' y ' + ult : ult) + '.';
+}
+
+// ---------- Hecho recientemente ----------
+function pintarHechas() {
+  const hechas = S.ideas.filter(i => i.hecho && Date.now() - (i.hechoEn || 0) < 7 * DIA_MS).sort((a, b) => b.hechoEn - a.hechoEn);
+  const dia = t => { const d = new Date(t), h = new Date(); h.setHours(0, 0, 0, 0); const n = Math.round((h - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / DIA_MS);
+    return n === 0 ? 'Hoy' : n === 1 ? 'Ayer' : cap(DIAS[d.getDay()]) + ' ' + d.getDate(); };
+  let ult = '', html = '';
+  hechas.forEach(i => {
+    const d = dia(i.hechoEn);
+    if (d !== ult) { html += `<div class="zona" style="padding-left:22px">${d}</div>`; ult = d; }
+    html += `<div class="task done" data-id="${i.id}"><div class="front"><button data-act="deshecho" data-id="${i.id}" style="padding:0;align-self:flex-start" aria-label="Volver a pendiente">${check(i.cat === 'olvidar' ? 'hoy' : i.cat, true, 22)}</button><div class="body"><div class="t">${tituloHTML(i, true)}</div><div class="meta"><span class="mtxt">${NOMBRE[i.cat]}</span></div></div></div></div>`;
+  });
+  $('#hecho-body').innerHTML = `<div style="font-size:28px;font-weight:600;padding:2px 20px 0">Hecho recientemente</div>
+    <div class="sub">Lo terminado en los últimos 7 días. Toca el círculo si al final no estaba hecho.</div>
+    <div class="items enter" style="padding-bottom:60px">${html || '<div class="list-note">Aún no has terminado nada esta semana.</div>'}</div>`;
+  [...$('#hecho-body .items').children].forEach((e, k) => e.style.setProperty('--i', Math.min(k, 10)));
+}
+
+// ---------- Olvidar: a los 7 días, pregunta antes de borrar ----------
+function olvidarViejas() {
+  return S.ideas.filter(i => i.cat === 'olvidar' && !i.hecho && Date.now() - (i.pospuesto || i.creado) > 7 * DIA_MS);
+}
+function tarjetaOlvidar(forzar) {
+  const viejas = olvidarViejas();
+  const hoy = hoyIso();
+  const el = $('#olv-card');
+  if (!viejas.length) { if (el) cerrarTarjetaOlvidar(); return; }
+  if (!forzar && !el && S.local.olvidarDia === hoy) return;          // como mucho una vez al día
+  S.local.olvidarDia = hoy; persist();
+  const c = el || Object.assign(document.createElement('div'), { id: 'olv-card', className: 'olv-card glass' });
+  c.innerHTML = `<div class="olv-h"><b>Hace una semana lo apuntaste.</b><span>¿Lo borramos?</span></div>
+    ${viejas.map(i => `<div class="olv-row" data-id="${i.id}"><span class="t">${esc(i.titulo)}</span>
+      <button class="link" data-act="olv-mas" data-id="${i.id}">Una semana más</button><button class="link urg" data-act="olv-borrar" data-id="${i.id}">Borrar</button></div>`).join('')}
+    ${viejas.length > 1 ? '<div class="olv-todo"><button class="link urg" data-act="olv-borrar-todo">Borrar todo</button></div>' : ''}`;
+  if (!el) { $('#s-home').appendChild(c); requestAnimationFrame(() => c.classList.add('on')); }
+}
+function cerrarTarjetaOlvidar() { const el = $('#olv-card'); if (!el) return; el.classList.remove('on'); setTimeout(() => el.remove(), 400); }
+function quitarFilaOlvidar(id) {
+  const r = $(`#olv-card .olv-row[data-id="${id}"]`);
+  if (r) { r.style.height = r.offsetHeight + 'px'; requestAnimationFrame(() => { r.classList.add('fuera'); r.style.height = '0px'; }); }
+  setTimeout(() => { if (!olvidarViejas().length) cerrarTarjetaOlvidar(); else if (r) r.remove(); }, 320);
+}
+
+// ---------- Personas (Ajustes) ----------
+let personasCache = null;
+async function pintarPersonas() {
+  const b = $('#per-body');
+  b.innerHTML = `<div style="font-size:28px;font-weight:600;padding:2px 20px 0">Personas</div>
+    <div class="sub">Para los botones de Llamar y WhatsApp. Se guardan en la pestaña «Personas» de tu hoja de Posso. A Gemini no le llega ningún teléfono.</div>
+    <div class="aj-note" style="padding:14px 22px 0">Cargando…</div>`;
+  if (!S.cfg) { b.querySelector('.aj-note').textContent = 'Conecta tu Google para guardar personas.'; return; }
+  try { personasCache = (await api('personas')).personas; } catch (e) { b.querySelector('.aj-note').textContent = 'No puedo leerlas ahora: ' + e.message; return; }
+  pintarPersonasLista();
+}
+function pintarPersonasLista() {
+  const b = $('#per-body');
+  const lista = personasCache.slice().sort((a, c) => (a.nombre.split(' ').slice(1).join(' ') || a.nombre).localeCompare(c.nombre.split(' ').slice(1).join(' ') || c.nombre, 'es'));
+  b.innerHTML = `<div style="font-size:28px;font-weight:600;padding:2px 20px 0">Personas</div>
+    <div class="sub">Para los botones de Llamar y WhatsApp. Se guardan en la pestaña «Personas» de tu hoja de Posso. A Gemini no le llega ningún teléfono.</div>
+    <div class="aj-h">${lista.length} ${lista.length === 1 ? 'persona' : 'personas'}</div>
+    <div class="card">${lista.map(p => `<button class="arow" data-act="persona" data-n="${esc(p.nombre)}"><span>${esc(p.nombre)}${p.alias ? `<small class="alias">${esc(p.alias)}</small>` : ''}</span><span class="v">${esc(p.tel || 'sin teléfono')} ›</span></button>`).join('')}
+      <button class="arow" data-act="persona-nueva"><span style="color:var(--deep)">+ Nueva persona</span></button></div>
+    <div class="card" style="margin-top:14px"><button class="arow" data-act="importar-contactos"><span style="color:var(--deep)">Importar de Google Contactos</span></button></div>
+    <div class="aj-note" style="padding:8px 32px 60px">«Cómo le llamas» es lo que dices al hablar: ama, aita, hermano… Si dos nombres se parecen, Posso te pregunta antes de llamar.</div>`;
+}
+async function guardarPersonasYa() {
+  try { personasCache = (await api('guardarPersonas', { personas: personasCache })).personas; pintarPersonasLista(); toast('Guardado.'); }
+  catch (e) { toast('No se ha guardado: ' + e.message); }
+}
+async function importarContactos() {
+  const b = $('#per-body');
+  toast('Leyendo tus contactos de Google…');
+  let cs;
+  try { cs = (await api('contactos', {}, 60000)).contactos; } catch (e) { toast(e.message, null); return; }
+  const ya = new Set(personasCache.map(p => norm(p.nombre)));
+  b.innerHTML = `<div style="font-size:28px;font-weight:600;padding:2px 20px 0">Importar</div>
+    <div class="sub">${cs.length} contactos con teléfono. Elige los que quieras o impórtalos todos.</div>
+    <div class="chips" style="padding:14px 16px 0"><button class="csel" data-act="imp-todos">Marcar todos</button></div>
+    <div class="card" id="imp-lista">${cs.map((c, k) => `<label class="arow"><span>${esc(c.nombre)}<small class="alias">${esc(c.tel)}</small></span><input type="checkbox" data-k="${k}" ${ya.has(norm(c.nombre)) ? 'checked disabled' : ''}></label>`).join('')}</div>
+    <div style="text-align:center;padding:20px 0 60px"><button class="pill" data-act="imp-ok">Importar</button></div>`;
+  b._contactos = cs;
+}
 
 // =====================================================================
 // 16 · DATOS DE EJEMPLO (solo en modo prueba)
@@ -1168,7 +2078,14 @@ function sembrarDemo() {
     I('Ordenar papeles del piso', 'semana', { carpeta: 'Casa', aviso: at(d(6), 10) }),
     I('Escapada a Biarritz', 'algun', {}, 14),
     I('Aprender a tocar el piano', 'algun', {}, 31),
-    I('Lo que dijo aquel compañero', 'olvidar', {}, 2)
+    I('Lo que dijo aquel compañero', 'olvidar', {}, 2),
+    I('Compra', 'hoy', { tipo: 'lista', clave: 'Compra', items: [
+      { id: uid(), t: '3 tipos de quesos', hecho: false, zona: 'Lácteos y huevos' }, { id: uid(), t: 'Jamón york', hecho: false, zona: 'Carnicería y charcutería' },
+      { id: uid(), t: '2 docenas de huevos', hecho: false, zona: 'Lácteos y huevos' }, { id: uid(), t: 'Sustrato para el acuario', hecho: false, zona: 'Mascotas y acuario' }] }),
+    I('Corregir', 'semana', { tipo: 'lista', clave: 'Corregir', carpeta: 'Instituto', items: [
+      { id: uid(), t: '2ºB · Ejercicios de vistas', hecho: false }, { id: uid(), t: '4ºC · Página web de Google Sites', hecho: false }] }),
+    I('Revisar el correo del máster', 'semana', { repetir: { tipo: 'semanal', dias: [1], hora: '09:00' }, aviso: at(d(1), 9) }),
+    I('Preguntarle a Ander por las notas', 'semana', { personas: ['Ander'], rapida: true, grupo: '4ºC', carpeta: 'Instituto' })
   ];
   S.local.demoSembrado = true; persist();
 }
@@ -1199,7 +2116,7 @@ async function arrancar() {
     if (CATS.includes(abrir)) { S.cat = abrir; actual = null; ir('s-home', 'fade', { sinPila: true }); ir('s-list', 'push'); }
     else if (abrir === 'hablar') { ir('s-home', 'fade', { sinPila: true }); empezarVoz(); }
     else if (abrir === 'cosas') { ir('s-home', 'fade', { sinPila: true }); setTimeout(abrirCosas, 300); }
-    else { ir('s-home', 'fade', { sinPila: true }); animarGema($('#home-gem'), 'drop'); }
+    else { ir('s-home', 'fade', { sinPila: true }); animarGema($('#home-gem'), 'drop'); setTimeout(() => tarjetaOlvidar(false), 900); }
     if (abrir) history.replaceState(null, '', location.pathname);
   }
   if (S.cfg) { cfgParaSW(); sincronizar(true); if (!abrir) destinoDelWidget(); }
@@ -1208,6 +2125,13 @@ async function arrancar() {
     if (document.visibilityState === 'visible') { destinoDelWidget(); if (S.cfg) sincronizar(true); pintarTodo(true); }
   });
   window.addEventListener('online', () => programarSync(100));
+  $('#foto-tareas').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) fotoATareas(f); });
+  // si hay una lista compartida a la vista, se mira cada 5 s lo que marca la otra persona
+  setInterval(() => {
+    if (document.visibilityState !== 'visible' || !S.cfg || S.outbox.length) return;
+    const viendo = (actual && actual.id === 's-list') || $('#sh-idea').classList.contains('on');
+    if (viendo && S.ideas.some(i => i.compartir && !i.hecho)) sincronizar(true);
+  }, 5000);
   // un aviso pulsado con la app abierta
   if (navigator.serviceWorker) navigator.serviceWorker.addEventListener('message', e => {
     if (e.data && e.data.abrir) abrirDesdeAviso(e.data.abrir);

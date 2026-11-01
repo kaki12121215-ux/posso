@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Lista de la compra · Posso</title>
+<meta name="theme-color" content="#EEF6F5">
+<link rel="icon" href="icons/favicon-32.png">
+<style>
+@font-face{font-family:'Jakarta';src:url('fonts/PlusJakartaSans.woff') format('woff');font-weight:200 800;font-display:swap}
+:root{--bg:#EEF6F5;--surface:#F8FBFB;--ink:#15302D;--ink2:#557370;--ink3:#97AFAC;--deep:#1F7A72;--line:#DBE9E7;--hoy:#2FA79C;--k:#DDF1EC}
+@media (prefers-color-scheme:dark){:root{--bg:#071D1C;--surface:#0E2826;--ink:#E6F4F2;--ink2:#9DBDB9;--ink3:#5F7F7B;--deep:#8FE3D9;--line:#1E3D3A;--k:#123B37}}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{font-family:'Jakarta',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased;
+  padding:calc(env(safe-area-inset-top,0px) + 26px) 0 calc(env(safe-area-inset-bottom,0px) + 40px);max-width:560px;margin:0 auto}
+.logo{font-weight:300;font-size:20px;text-align:center}.logo span{color:var(--hoy)}
+.head{margin:18px 16px 0;padding:20px;border-radius:26px;background:var(--k)}
+.head .lab{font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--deep)}
+.head .n{font-size:30px;font-weight:600;margin-top:6px}
+.head .s{font-size:14px;color:var(--ink2);margin-top:4px;line-height:1.4}
+.zona{font-size:12px;font-weight:700;color:var(--ink3);letter-spacing:.05em;text-transform:uppercase;padding:22px 22px 4px}
+.it{display:flex;gap:12px;align-items:center;padding:14px 22px;width:100%;text-align:left;border:0;background:none;font:inherit;color:inherit;
+  position:relative;cursor:pointer;transition:opacity .3s}
+.it::after{content:"";position:absolute;left:56px;right:22px;bottom:0;height:1px;background:var(--line)}
+.it .t{font-size:16px;line-height:1.3;background:linear-gradient(currentColor,currentColor) 0 55%/0% 1px no-repeat;transition:background-size .35s,color .35s}
+.it.hecho .t{background-size:100% 1px;color:var(--ink3)}
+.ck{flex:none}
+.ck .f{fill-opacity:0;transition:fill-opacity .25s}.ck path{stroke-dasharray:14;stroke-dashoffset:14;transition:stroke-dashoffset .3s .1s}
+.it.hecho .ck .f{fill-opacity:1}.it.hecho .ck path{stroke-dashoffset:0}
+.pie{text-align:center;font-size:12.5px;color:var(--ink3);margin-top:26px;padding:0 30px;line-height:1.5}
+.err{text-align:center;color:var(--ink2);margin-top:60px;padding:0 30px;line-height:1.5}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.entra>*{animation:rise .4s cubic-bezier(.2,.8,.2,1) both}
+@media (prefers-reduced-motion:reduce){.entra>*{animation:none}}
+</style>
+</head>
+<body>
+<div class="logo">P<span>o</span>ss<span>o</span></div>
+<div id="app"><div class="err">Cargando la lista…</div></div>
+<script>
+'use strict';
+const h = new URLSearchParams(location.hash.slice(1));
+const URL_S = h.get('u'), TOKEN = h.get('t');
+let datos = null, pendiente = 0;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const ck = '<svg class="ck" width="22" height="22" viewBox="0 0 20 20"><circle class="f" cx="10" cy="10" r="9.2" fill="#2FA79C"/><circle cx="10" cy="10" r="8.6" fill="none" stroke="#2FA79C" stroke-width="1.3"/><path d="M6 10.3l2.6 2.6L14.2 7.4" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+async function cargar(primera) {
+  if (pendiente) return;
+  try {
+    const r = await fetch(URL_S + '?lista=' + encodeURIComponent(TOKEN));
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    if (!pendiente) { const cambia = JSON.stringify(j) !== JSON.stringify(datos); datos = j; if (cambia) pintar(primera); }
+  } catch (e) {
+    if (!datos) document.getElementById('app').innerHTML = '<div class="err">No puedo abrir la lista. ' + esc(e.message || '') + '</div>';
+  }
+}
+function pintar(animar) {
+  const quedan = datos.items.filter(x => !x.hecho).length;
+  const orden = datos.zonas || [];
+  const grupos = {};
+  datos.items.forEach(x => (grupos[x.zona || 'Otros'] = grupos[x.zona || 'Otros'] || []).push(x));
+  const zonas = Object.keys(grupos).sort((a, b) => orden.indexOf(a) - orden.indexOf(b));
+  document.getElementById('app').innerHTML =
+    `<div class="head"><div class="lab">Lista compartida</div><div class="n">${esc(datos.titulo)}</div>
+     <div class="s">${quedan ? (quedan === 1 ? 'Queda 1 cosa.' : `Quedan ${quedan} cosas.`) : 'Ya está todo.'} Toca lo que vayas cogiendo.</div></div>
+     <div class="${animar ? 'entra' : ''}">${zonas.map(z => `<div class="zona">${esc(z)}</div>` + grupos[z].map(x =>
+       `<button class="it${x.hecho ? ' hecho' : ''}" data-id="${esc(x.id)}">${ck}<span class="t">${esc(x.t)}</span></button>`).join('')).join('')}</div>
+     <div class="pie">Se actualiza sola cada pocos segundos. No hace falta instalar nada.</div>`;
+  if (animar) [...document.querySelectorAll('.entra>*')].forEach((e, k) => e.style.animationDelay = Math.min(k, 14) * 0.04 + 's');
+}
+document.addEventListener('click', async e => {
+  const b = e.target.closest('.it'); if (!b) return;
+  const x = datos.items.find(i => i.id === b.dataset.id); if (!x) return;
+  x.hecho = !x.hecho; b.classList.toggle('hecho', x.hecho);
+  try { navigator.vibrate && navigator.vibrate(8); } catch (er) {}
+  pendiente++;
+  try {
+    const r = await fetch(URL_S, { method: 'POST', body: JSON.stringify({ accion: 'marcarCompartida', token: TOKEN, itemId: x.id, hecho: x.hecho }) });
+    const j = await r.json(); if (!j.error) datos = j;
+  } catch (er) {}
+  pendiente--;
+  const s = document.querySelector('.head .s'), quedan = datos.items.filter(i => !i.hecho).length;
+  if (s) s.textContent = (quedan ? (quedan === 1 ? 'Queda 1 cosa.' : `Quedan ${quedan} cosas.`) : 'Ya está todo.') + ' Toca lo que vayas cogiendo.';
+});
+if (!URL_S || !TOKEN) document.getElementById('app').innerHTML = '<div class="err">Este enlace no está completo.</div>';
+else { cargar(true); setInterval(() => document.visibilityState === 'visible' && cargar(false), 4000); }
+</script>
+</body>
+</html>

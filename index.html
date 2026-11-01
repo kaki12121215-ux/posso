@@ -76,7 +76,11 @@
       <div class="gem tap" data-gem data-act="hablar" id="home-gem" style="--s:var(--g)"></div>
       <div class="home-hint" id="home-hint">Toca la gema y habla</div>
     </div>
-    <button class="kbd" data-act="escribir" aria-label="Escribir">
+    <button class="kbd kbd-cam" data-act="foto" aria-label="Foto a tareas">
+      <svg width="19" height="16" viewBox="0 0 19 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M1.5 4.8a1.6 1.6 0 0 1 1.6-1.6h2.5L7 1.3h5l1.4 1.9h2.5a1.6 1.6 0 0 1 1.6 1.6v8.3a1.6 1.6 0 0 1-1.6 1.6H3.1a1.6 1.6 0 0 1-1.6-1.6z"/><circle cx="9.5" cy="8.6" r="3"/></svg>
+    </button>
+    <input type="file" accept="image/*" id="foto-tareas" hidden>
+    <button class="kbd kbd-txt" data-act="escribir" aria-label="Escribir">
       <svg width="18" height="13" viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="1" y="1" width="18" height="12" rx="2.5"/><path d="M5 5h.01M8.3 5h.01M11.6 5h.01M15 5h.01M5 8h.01M15 8h.01M7.5 9.6h5"/></svg>
     </button>
     <div class="bottom" style="bottom:calc(40px + var(--sb))">
@@ -87,6 +91,7 @@
     <div class="sheet" id="sh-cosas">
       <div class="grab-zone" data-drag="sh-cosas"><div class="grab"></div><div class="cosas-t">Tus cosas</div></div>
       <div class="drawers" id="drawers"></div>
+      <button class="hechas-fila" id="hechas-fila" data-act="hechas" hidden><span>Hecho recientemente</span><svg width="7" height="12" viewBox="0 0 9 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 1.5l6 6-6 6"/></svg></button>
       <div class="gem-dock"><div class="gem tap" data-gem data-act="hablar" style="--s:104px"></div></div>
     </div>
   </section>
@@ -137,7 +142,7 @@
     <div class="proc-txt">
       <b id="proc-t">Ordenando…</b>
       <p id="proc-s">Un momento.</p>
-      <div class="wave" id="proc-wave"><span style="background:var(--c-hoy)"></span><span style="background:var(--c-semana)"></span><span style="background:var(--c-algun)"></span><span style="background:var(--c-olvidar)"></span></div>
+      <div class="wave" id="proc-wave"><span style="background:var(--v-hoy)"></span><span style="background:var(--v-semana)"></span><span style="background:var(--v-algun)"></span><span style="background:var(--v-olvidar)"></span></div>
       <div class="proc-err" id="proc-err" hidden>
         <button class="pill small" data-act="reintentar">Probar otra vez</button>
         <button class="link" data-act="error-escribir">Escribirlo</button>
@@ -172,6 +177,20 @@
     <div class="topbar" style="height:44px"><div class="side"><button class="iconbtn back" data-act="atras" aria-label="Atrás"><svg width="11" height="19" viewBox="0 0 11 19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2L2 9.5 9 17"/></svg></button></div></div>
     <div class="scroll" id="aj-body"></div>
   </section>
+
+  <!-- ===== Hecho recientemente ===== -->
+  <section class="screen" id="s-hecho">
+    <div class="topbar" style="height:44px"><div class="side"><button class="iconbtn back" data-act="atras" aria-label="Atrás"><svg width="11" height="19" viewBox="0 0 11 19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2L2 9.5 9 17"/></svg></button></div></div>
+    <div class="scroll" id="hecho-body"></div>
+  </section>
+
+  <!-- ===== Personas ===== -->
+  <section class="screen" id="s-per">
+    <div class="topbar" style="height:44px"><div class="side"><button class="iconbtn back" data-act="atras" aria-label="Atrás"><svg width="11" height="19" viewBox="0 0 11 19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2L2 9.5 9 17"/></svg></button></div></div>
+    <div class="scroll" id="per-body"></div>
+  </section>
+
+  <div id="scrim-scr" data-act="atras"></div>
 
   <!-- ===== Hoja: una idea ===== -->
   <div class="scrim" id="scrim-idea" data-act="cerrar-idea"></div>
