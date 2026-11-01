@@ -1,0 +1,17 @@
+{
+  "name": "Posso",
+  "short_name": "Posso",
+  "description": "Dilo en voz alta. Posso lo ordena por ti y te avisa cuando toca.",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#EEF6F5",
+  "theme_color": "#EEF6F5",
+  "icons": [
+    { "src": "icons/icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
