@@ -75,9 +75,16 @@ function leerCodigo(codigo) {
   } catch (e) { return null; }
 }
 
-async function api(accion, datos = {}) {
+async function api(accion, datos = {}, espera = 30000) {
   if (!S.cfg) throw new Error('sin-conexion');
-  const r = await fetch(S.cfg.url, { method: 'POST', body: JSON.stringify(Object.assign({}, datos, { accion, key: S.cfg.key })) });
+  const ctl = window.AbortController ? new AbortController() : null;
+  const t = setTimeout(() => ctl && ctl.abort(), espera);
+  let r;
+  try {
+    r = await fetch(S.cfg.url, { method: 'POST', body: JSON.stringify(Object.assign({}, datos, { accion, key: S.cfg.key })), signal: ctl ? ctl.signal : undefined });
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? 'Tu Google está tardando demasiado en responder. Prueba otra vez en un momento.' : (e.message || 'Load failed'));
+  } finally { clearTimeout(t); }
   const j = await r.json();
   if (j.error) throw new Error(j.error);
   return j;
@@ -819,13 +826,14 @@ async function procesar(entrada) {
       if (entrada.texto) datos.texto = entrada.texto;
       else {
         if (!entrada.audio) {
-          const wav = await aWav(entrada.blob);
+          const wav = await Promise.race([aWav(entrada.blob).catch(() => null), wait(8000).then(() => null)]);
           entrada.audio = await aBase64(wav || entrada.blob);
           entrada.mime = wav ? 'audio/wav' : (entrada.blob.type || 'audio/mp4').split(';')[0];
         }
         datos.audio = entrada.audio; datos.mime = entrada.mime;
       }
-      r = await api('procesar', datos);
+      const avisoLento = setTimeout(() => { if (actual && actual.id === 's-proc') $('#proc-s').textContent = 'Sigo con ello. Cuando hay mucho que ordenar tardo un poco más.'; }, 12000);
+      try { r = await api('procesar', datos, 100000); } finally { clearTimeout(avisoLento); }
     } else {
       await wait(900);
       const t = entrada.texto || entrada.textoVivo;

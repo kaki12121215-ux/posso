@@ -2,7 +2,7 @@
  * - Guarda la app para que abra al momento (y sin conexión).
  * - Recibe los avisos: llega un "toque" sin contenido, pregunta a tu Apps Script qué decir y lo muestra.
  */
-const VERSION = 'posso-1.0.0';
+const VERSION = 'posso-1.0.1';
 const ARCHIVOS = ['./', 'index.html', 'app.css', 'app.js', 'gema.js', 'manifest.webmanifest',
   'fonts/PlusJakartaSans.woff', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/favicon-32.png'];
 
