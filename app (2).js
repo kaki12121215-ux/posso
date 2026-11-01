@@ -1,4 +1,4 @@
-/* POSSO · la app — versión «Con texto en directo»
+/* POSSO · la app
  * Todo en un archivo: datos, conexión con tu Google (Apps Script), voz, pantallas y animaciones.
  */
 'use strict';
@@ -8,6 +8,8 @@
 // =====================================================================
 const CATS = ['hoy', 'semana', 'algun', 'olvidar'];
 const NOMBRE = { hoy: 'Hoy', semana: 'Esta semana', algun: 'Algún día', olvidar: 'Olvidar' };
+const POP = { id: null, fila: null };                    // menú de pulsación larga
+const SEL = { on: false, donde: '', ids: new Set() };   // modo Editar (varias a la vez)
 const SUB = {
   hoy: 'Con esto, el día está cubierto.',
   semana: 'Te aviso de cada cosa el día que toca.',
@@ -403,6 +405,7 @@ function ir(id, modo = 'push', { sinPila = false } = {}) {
   if (modo === 'push' && HOJAS.includes(id)) modo = 'hoja';
   if (reduceMotion() && modo !== 'none') modo = 'fade';
   if (vieja && !sinPila && (modo === 'push' || modo === 'hoja')) pila.push({ id: vieja.id, hoja: modo === 'hoja' });
+  salirSel(); cerrarPop();
   cerrarHoja('sh-cosas', modo === 'none'); cerrarHoja('sh-idea', modo === 'none');
   $('#toast').classList.remove('on');
 
@@ -525,6 +528,7 @@ function abrirHoja(id, instantanea) {
 }
 function cerrarHoja(id, rapido) {
   const sh = $('#' + id); if (!sh || !sh.classList.contains('on')) return;
+  if (id === 'sh-cosas' && SEL.donde === 'cosas') salirSel();
   const scrim = scrimDe(id);
   if (rapido) { sh.style.transition = 'none'; scrim.style.transition = 'none'; }
   sh.classList.remove('on', 'drag'); scrim.classList.remove('on');
@@ -562,7 +566,12 @@ function pintarInicio() {
 
 // ---------- Tus cosas (las cuatro tarjetas) ----------
 function pintarCajones(animar = true) {
-  $('#drawers').innerHTML = CATS.map((c, k) => {
+  const vista = S.local.vistaCosas === 'carpetas' ? 'carpetas' : 'bloques';
+  $$('#vista-tg button').forEach(b => b.classList.toggle('on', b.dataset.v === vista));
+  const ed = $('#cosas-editar'); if (ed) { ed.hidden = vista !== 'carpetas'; const en = SEL.on && SEL.donde === 'cosas'; ed.textContent = en ? 'Listo' : 'Editar'; ed.dataset.act = en ? 'sel-off' : 'sel-on'; }
+  $('#drawers').classList.toggle('carpetas', vista === 'carpetas');
+  if (vista === 'carpetas') pintarCarpetas();
+  else $('#drawers').innerHTML = CATS.map((c, k) => {
     const items = pendientes(c);
     const filas = items.slice(0, 2).map(i =>
       `<div class="row${c === 'olvidar' ? ' olv' : ''}">${check(c, false, 18)}<div style="min-width:0"><div class="t">${tituloHTML(i, true)}</div>${meta(i, 'cajon')}</div></div>`).join('');
@@ -577,6 +586,29 @@ function pintarCajones(animar = true) {
   if (fila) { fila.hidden = !nh; fila.querySelector('span').textContent = `Hecho recientemente · ${nh}`; }
   const d = $('#drawers'); d.classList.remove('enter');
   if (animar) { void d.offsetWidth; d.classList.add('enter'); }
+  marcarSel();
+}
+/** Vista por carpetas: cada carpeta con todo lo que tiene pendiente, en una sola pantalla */
+function pintarCarpetas() {
+  const todas = CATS.flatMap(c => pendientes(c));
+  const nombres = S.carpetas.slice();
+  todas.forEach(i => { if (i.carpeta && !nombres.includes(i.carpeta)) nombres.push(i.carpeta); });
+  const grupos = nombres.map(n => ({ n, items: todas.filter(i => i.carpeta === n) }));
+  const sin = todas.filter(i => !i.carpeta);
+  if (sin.length) grupos.push({ n: '', items: sin });
+  $('#drawers').innerHTML = grupos.map((g, k) => `
+    <section class="carp" style="--i:${Math.min(k, 8)}">
+      <div class="carp-h">${ICO.folderL}<b>${g.n ? esc(g.n) : 'Sin carpeta'}</b><span>${g.items.length || ''}</span></div>
+      ${g.items.length ? g.items.map(i => {
+        const c = catDe(i), f = i.aviso ? fechaCorta(i.aviso) : '';
+        return `<div class="crow${i.provisional ? ' prov' : ''}" data-id="${i.id}" data-sel data-act="editar">
+          <span class="selmk"></span>
+          <button class="cck" data-act="hecho" data-id="${i.id}" aria-label="Hecho">${check(c, false, 20)}</button>
+          <div class="cb"><div class="t">${tituloHTML(i, true)}</div>
+            <div class="cm"><span style="color:var(--c-${c})">${NOMBRE[c]}</span>${f ? ` · ${esc(f)}` : ''}${i.urgente ? ' · <span class="u">Urgente</span>' : ''}${(i.items || []).length ? ` · ${i.items.filter(x => !x.hecho).length} dentro` : ''}</div></div>
+        </div>`;
+      }).join('') : `<div class="carp-vacia">Nada pendiente aquí.</div>`}
+    </section>`).join('') || '<div class="carp-vacia" style="padding:30px 6px">Aún no tienes nada.</div>';
 }
 function abrirCosas() { pintarCajones(); abrirHoja('sh-cosas'); vib(); }
 
@@ -610,6 +642,7 @@ function paneHTML(c) {
   const labCol = document.documentElement.dataset.theme === 'dark' ? `var(--c-${c})` : c === 'hoy' ? 'var(--deep)' : 'var(--ink2)';
   const vacio = !items.length;
   const head = `<div class="headcard" style="background:var(--k-${c})">
+      ${pend.length ? `<button class="sel-btn hc" data-act="${SEL.on ? 'sel-off' : 'sel-on'}">${SEL.on ? 'Listo' : 'Editar'}</button>` : ''}
       <div class="lab" style="color:${labCol}">${lab}</div>
       <div class="n">${vacio ? (c === 'hoy' ? 'Nada para hoy.' : 'Nada por aquí.') : !pend.length ? 'Todo hecho.' : `${pend.length} ${pend.length === 1 ? 'cosa' : 'cosas'}`}</div>
       <div class="s">${vacio ? (c === 'hoy' ? 'Aprovecha.' : 'Cuando digas algo así, aparecerá aquí.') : !pend.length ? (c === 'hoy' ? 'Por hoy, ya está.' : 'No queda nada pendiente.') : SUB[c]}</div></div>`;
@@ -617,7 +650,7 @@ function paneHTML(c) {
     ? `<div class="empty-state"><div class="gem" data-gem style="--s:min(200px,26vh);opacity:.9"></div><p>Si te ronda algo, toca la gema y cuéntamelo.</p></div>`
     : `<div class="items">${items.map(i => fila(i, c)).join('')}
       <div class="cheer">Una menos.</div>
-      ${pend.length ? `<div class="list-note">Mantén pulsada una tarea para borrarla${c === 'olvidar' ? ' o pasarla a Hoy' : ''}. Desliza a los lados para cambiar de categoría.</div>` : ''}</div>`;
+      ${pend.length ? `<div class="list-note">Mantén pulsada una tarea para ver sus opciones, o toca Editar para elegir varias. Desliza a los lados para cambiar de categoría.</div>` : ''}</div>`;
   const chips = grupos.length ? `<div class="grupos">${['', ...grupos].map(g =>
     `<button class="csel${g === filtro ? ' on' : ''}" data-act="grupo" data-v="${esc(g)}">${g ? esc(g) : 'Todos'}</button>`).join('')}</div>` : '';
   return head + chips + `<div class="scroll">${cuerpo}</div>`;
@@ -635,7 +668,7 @@ function pintarLista(dir = 0, suave = false) {
   if (suave && paneActual()) return refrescarLista();
   const body = $('#list-body');
   body.innerHTML = '';
-  const p = nuevoPane(S.cat); body.appendChild(p);
+  const p = nuevoPane(S.cat); body.appendChild(p); marcarSel();
   const it = p.querySelector('.items');
   if (it && !reduceMotion()) {
     [...it.children].forEach((e, k) => e.style.setProperty('--i', Math.min(k, 8)));
@@ -659,6 +692,7 @@ function refrescarLista() {
     const n = pane.querySelector('.headcard .n');
     if (n && nAntes && n.textContent !== nAntes) { const t = n.textContent; n.textContent = nAntes; cambiaTexto(n, t); }
     flip(pane, antes);
+    marcarSel();
   };
   if (salen.length && !reduceMotion()) {
     salen.forEach(encoger);
@@ -673,9 +707,8 @@ function encoger(e) {
 function fila(i, c) {
   c = c || S.cat;
   const olv = i.cat === 'olvidar';
-  const under = `<div class="under acciones">${olv ? `<button class="act go" data-act="fila-hoy" data-id="${i.id}">${ICO.arrowR}A Hoy</button>` : ''}<button class="act del" data-act="fila-borrar" data-id="${i.id}">${ICO.trash}Borrar</button></div>`;
-  return `<div class="task${i.hecho ? ' done' : ''}${olv ? ' olv' : ''}${i.provisional ? ' prov' : ''}" data-id="${i.id}">${under}
-    <div class="front"><button data-act="hecho" data-id="${i.id}" style="padding:0;align-self:flex-start" aria-label="Hecho">${check(olv ? 'olvidar' : c, i.hecho, 22)}</button>
+  return `<div class="task${i.hecho ? ' done' : ''}${olv ? ' olv' : ''}${i.provisional ? ' prov' : ''}" data-id="${i.id}" data-sel>
+    <div class="front"><span class="selmk"></span><button data-act="hecho" data-id="${i.id}" style="padding:0;align-self:flex-start" aria-label="Hecho">${check(olv ? 'olvidar' : c, i.hecho, 22)}</button>
     <div class="body" data-act="editar" data-id="${i.id}"><div class="t">${tituloHTML(i)}</div>${i.hecho ? '' : meta(i, 'lista')}
       ${(i.fotos || []).length && !i.hecho ? `<div class="thumbs sm">${i.fotos.map(f => `<span class="thumb" style="background-image:url(${f.mini})"></span>`).join('')}</div>` : ''}</div></div>
     ${(i.items || []).length && !i.hecho ? `<div class="subs">${subHTML(i, false)}</div>` : ''}</div>`;
@@ -700,8 +733,8 @@ function flip(cont, antes) {
 // ---------- pasar de una categoría a otra, como tarjetas ----------
 let deslizando = false;
 async function irACat(nueva, desdeDx = 0, vel = 0) {
-  if (deslizando) return;
-  filaAbierta = null;
+  if (deslizando || SEL.on) return;
+  cerrarPop();
   const k0 = CATS.indexOf(S.cat), k1 = CATS.indexOf(nueva);
   if (k1 === k0 || k1 < 0) return;
   const dir = k1 > k0 ? 1 : -1;
@@ -742,32 +775,34 @@ function marcarHecho(id, btn) {
     const sig = proximaVez(i);
     setTimeout(() => {
       hacer(OP.cambiar(id, { aviso: sig, hecho: false, items: (i.items || []).map(x => Object.assign({}, x, { hecho: false })) }));
-      refrescarLista();
+      refrescarLista(); refrescarCosas();
       toast('Una menos. Vuelve ' + fechaCorta(sig, true).replace(/^(\D)/, m => m) + '.');
     }, 520);
     return;
   }
   const nuevo = !i.hecho;
   const ck = btn.querySelector('.ck');
+  const crow = btn.closest('.crow'); if (crow && nuevo) setTimeout(() => encoger(crow), 380);
   if (ck) { ck.classList.toggle('done', nuevo); ck.classList.remove('pop'); void ck.offsetWidth; ck.classList.add('pop'); }
   const task = btn.closest('.task'); if (task) task.classList.toggle('done', nuevo);   // el tachado se dibuja poco a poco
   vib();
   setTimeout(() => {
     hacer(OP.cambiar(id, i.items && i.items.length ? { hecho: nuevo, items: i.items.map(x => Object.assign({}, x, { hecho: nuevo })) } : { hecho: nuevo }));
-    refrescarLista();
+    refrescarLista(); refrescarCosas();
     if (nuevo) setTimeout(() => { const ch = paneActual() && paneActual().querySelector('.cheer'); if (ch) { ch.classList.add('on'); setTimeout(() => ch.classList.remove('on'), 2200); } }, 60);
   }, 520);
 }
+function refrescarCosas() { if ($('#sh-cosas').classList.contains('on')) pintarCajones(false); }
 function borrarFila(el, id) {
   encoger(el);
   setTimeout(() => {
-    hacer(OP.quitar(id)); refrescarLista();
+    hacer(OP.quitar(id)); refrescarLista(); refrescarCosas();
     toast('Borrado', 'Deshacer', () => deshacer('lista'));
   }, 300);
 }
 function soltarOlvidar(el, id) {   // de Olvidar a Hoy
   encoger(el);
-  setTimeout(() => { hacer(OP.cambiar(id, { cat: 'hoy' })); refrescarLista(); toast('Pasa a Hoy', 'Deshacer', () => deshacer('lista')); }, 300);
+  setTimeout(() => { hacer(OP.cambiar(id, { cat: 'hoy' })); refrescarLista(); refrescarCosas(); toast('Pasa a Hoy', 'Deshacer', () => deshacer('lista')); }, 300);
 }
 
 // ---------- Hoja de una idea (mover, carpeta, urgente, aviso) ----------
@@ -1654,8 +1689,36 @@ const ACT = {
     b.ideas.forEach(i => { if (i.carpetaNueva === c) { i.carpeta = c; delete i.carpetaNueva; } });
     vib(); pintarResultado(); toast('Carpeta «' + c + '» creada.');
   },
-  'fila-borrar': el => { const task = el.closest('.task'); filaAbierta = null; vib(); borrarFila(task, el.dataset.id); },
-  'fila-hoy': el => { const task = el.closest('.task'); filaAbierta = null; vib(); soltarOlvidar(task, el.dataset.id); },
+  vista: el => { S.local.vistaCosas = el.dataset.v; persist(); salirSel(); vib(); pintarCajones(true); $('#drawers').scrollTop = 0; },
+  'pop-cerrar': () => cerrarPop(),
+  'pop-editar': () => { const id = POP.id; cerrarPop(); abrirIdea({ tipo: 'guardada', id }); },
+  'pop-borrar': () => { const { id, fila } = POP; cerrarPop(); vib(); borrarFila(fila, id); },
+  'pop-hoy': () => { const { id, fila } = POP; cerrarPop(); vib(); soltarOlvidar(fila, id); },
+  'pop-sel': () => { const { id, fila } = POP; cerrarPop(); entrarSel(fila.closest('#sh-cosas') ? 'cosas' : 'lista', id); },
+  'pop-mover': () => { const { id } = POP; cerrarPop(); menuMover([id]); },
+  'mover-a': el => moverA(el.dataset.k, el.dataset.v),
+  'sel-on': el => entrarSel(el.closest('#sh-cosas') ? 'cosas' : 'lista'),
+  'sel-off': () => salirSel(),
+  'sel-todo': () => {
+    const filas = filasSel(), todas = filas.length && filas.every(f => SEL.ids.has(f.dataset.id));
+    filas.forEach(f => todas ? SEL.ids.delete(f.dataset.id) : SEL.ids.add(f.dataset.id));
+    vib(); marcarSel();
+  },
+  'sel-borrar': () => {
+    const ids = [...SEL.ids]; if (!ids.length) return;
+    filasSel().filter(f => SEL.ids.has(f.dataset.id)).forEach(encoger);
+    vib();
+    setTimeout(() => { lote(ids.map(id => OP.quitar(id))); salirSel(); toast(ids.length === 1 ? 'Borrada' : `${ids.length} borradas`, 'Deshacer', () => deshacer('lista')); }, 300);
+  },
+  'sel-hecho': () => {
+    const ids = [...SEL.ids].filter(id => { const i = buscar(id); return i && i.cat !== 'olvidar'; }); if (!ids.length) return toast('Lo de Olvidar no se hace: se borra o se pasa a Hoy.');
+    vib();
+    lote(ids.map(id => { const i = buscar(id);
+      if (i.repetir) return OP.cambiar(id, { aviso: proximaVez(i), hecho: false, items: (i.items || []).map(x => Object.assign({}, x, { hecho: false })) });
+      return OP.cambiar(id, i.items && i.items.length ? { hecho: true, items: i.items.map(x => Object.assign({}, x, { hecho: true })) } : { hecho: true }); }));
+    salirSel(); toast(ids.length === 1 ? 'Hecha' : `${ids.length} hechas`, 'Deshacer', () => deshacer('lista'));
+  },
+  'sel-mover': () => { if (SEL.ids.size) menuMover([...SEL.ids]); },
   revisar: el => conSw(el, () => { S.local.sinRevisar = !S.local.sinRevisar; persist(); pintarAjustes(); }),
   foto: () => $('#foto-tareas').click(),
   grupo: el => { S.grupo = el.dataset.v; vib(); const p = paneActual(); if (p) { p.innerHTML = paneHTML(S.cat); p.querySelectorAll('[data-gem]').forEach(pintarGema); const it = p.querySelector('.items'); if (it && !reduceMotion()) { [...it.children].forEach((e, k) => e.style.setProperty('--i', Math.min(k, 8))); it.classList.add('enter'); } } },
@@ -1730,7 +1793,15 @@ const ACT = {
 
 document.addEventListener('click', e => {
   if (arrastrando) return;      // el clic que llega justo al soltar una pulsación larga o un arrastre no cuenta
-  if (filaAbierta && !e.target.closest('.task.abierta .under')) { cerrarFila(); e.preventDefault(); return; }
+  if (SEL.on && !e.target.closest('#selbar,#pop,#pop-scrim,.sel-btn,#vista-tg')) {
+    const f = e.target.closest('[data-sel]');
+    if (f && f.closest(SEL.donde === 'cosas' ? '#sh-cosas' : '#s-list')) {
+      e.preventDefault();
+      SEL.ids.has(f.dataset.id) ? SEL.ids.delete(f.dataset.id) : SEL.ids.add(f.dataset.id);
+      vib(); marcarSel();
+    }
+    if (!e.target.closest('.atras,[data-act="atras"],[data-act="cerrar-cosas"]')) return;
+  }
   const el = e.target.closest('[data-act]');
   if (!el || el.closest('[disabled]') || arrastrando) return;
   if (el.tagName === 'A') return;
@@ -1742,32 +1813,117 @@ $('#writebox').addEventListener('input', contarIdeas);
 document.addEventListener('pointerdown', e => { const g = e.target.closest('.gem.tap'); if (g) g.classList.add('press'); });
 ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => document.addEventListener(t, () => $$('.gem.press').forEach(g => g.classList.remove('press'))));
 
-// ---------- mantener pulsada una tarea: aparecen Borrar (y en Olvidar, A Hoy) ----------
-let filaAbierta = null;
-function abrirFila(task) {
-  cerrarFila();
-  filaAbierta = task; task.classList.add('abierta');
-  const ancho = task.querySelectorAll('.under .act').length * 92;
-  const f = task.querySelector('.front'); f.style.transition = 'transform .32s cubic-bezier(.3,1.2,.5,1)'; f.style.transform = `translateX(-${ancho}px)`;
+// ---------- mantener pulsada una tarea: sale un menú al lado ----------
+function abrirPop(fila) {
+  const id = fila.dataset.id, i = buscar(id); if (!i) return;
+  cerrarPop();
+  POP.id = id; POP.fila = fila;
+  const olv = i.cat === 'olvidar';
+  const pop = $('#pop');
+  pop.innerHTML = `
+    <button data-act="pop-editar">Abrir${ICO3.abrir}</button>
+    <button data-act="pop-sel">Seleccionar varias${ICO3.sel}</button>
+    <button data-act="pop-mover">Mover a…${ICO3.mover}</button>
+    ${olv ? `<button data-act="pop-hoy">Pasar a Hoy${ICO3.hoy}</button>` : ''}
+    <button data-act="pop-borrar" class="del">Borrar${ICO3.borrar}</button>`;
+  colocarPop(fila);
+  fila.classList.add('levantada');
+  $('#pop-scrim').classList.add('on');
   vib();
 }
-function cerrarFila() {
-  if (!filaAbierta) return;
-  const t = filaAbierta, f = t.querySelector('.front'); filaAbierta = null;
-  if (f) { f.style.transition = 'transform .28s cubic-bezier(.2,.8,.2,1)'; f.style.transform = ''; }
-  setTimeout(() => t.classList.remove('abierta'), 280);
+/** El menú sale debajo de la tarea, alineado a la derecha; si no cabe, encima */
+function colocarPop(ancla) {
+  const pop = $('#pop'), app = $('#app').getBoundingClientRect(), r = ancla.getBoundingClientRect();
+  pop.style.visibility = 'hidden'; pop.classList.add('on');
+  const h = pop.offsetHeight, w = pop.offsetWidth;
+  let top = r.bottom - app.top + 6, origen = 'top';
+  if (top + h > app.height - 24) { top = r.top - app.top - h - 6; origen = 'bottom'; }
+  top = Math.max(12, top);
+  const left = Math.max(12, Math.min(app.width - w - 12, r.right - app.left - w - 10));
+  Object.assign(pop.style, { top: top + 'px', left: left + 'px', transformOrigin: `${origen} right`, visibility: '' });
 }
+function cerrarPop() {
+  $('#pop').classList.remove('on'); $('#pop-scrim').classList.remove('on');
+  $$('.levantada').forEach(f => f.classList.remove('levantada'));
+  POP.id = null; POP.fila = null;
+}
+function menuMover(ids) {
+  const i0 = ids.length === 1 ? buscar(ids[0]) : null;
+  const pop = $('#pop');
+  pop.innerHTML = `<div class="pop-t">Cuándo</div>` +
+    CATS.map(c => `<button data-act="mover-a" data-k="cat" data-v="${c}" class="${i0 && i0.cat === c ? 'on' : ''}"><span class="pdot" style="background:var(--v-${c})"></span>${NOMBRE[c]}</button>`).join('') +
+    `<div class="pop-t">Carpeta</div>` +
+    S.carpetas.map(n => `<button data-act="mover-a" data-k="carpeta" data-v="${esc(n)}" class="${i0 && i0.carpeta === n ? 'on' : ''}">${esc(n)}</button>`).join('') +
+    `<button data-act="mover-a" data-k="carpeta" data-v="" class="${i0 && !i0.carpeta ? 'on' : ''}">Sin carpeta</button>`;
+  pop.dataset.ids = ids.join(',');
+  const ancla = SEL.on ? $('#selbar') : (document.querySelector(`[data-sel][data-id="${ids[0]}"]`) || $('#selbar'));
+  if (ancla.id === 'selbar') {
+    pop.style.visibility = 'hidden'; pop.classList.add('on');
+    const app = $('#app').getBoundingClientRect();
+    Object.assign(pop.style, { left: (app.width - pop.offsetWidth - 16) + 'px', top: Math.max(12, ancla.getBoundingClientRect().top - app.top - pop.offsetHeight - 8) + 'px', transformOrigin: 'bottom right', visibility: '' });
+  } else colocarPop(ancla);
+  $('#pop-scrim').classList.add('on'); vib();
+}
+function moverA(campo, valor) {
+  const ids = ($('#pop').dataset.ids || '').split(',').filter(id => buscar(id));
+  cerrarPop(); if (!ids.length) return;
+  const ops = ids.filter(id => (buscar(id)[campo] || '') !== valor).map(id => OP.cambiar(id, { [campo]: valor }));
+  if (ops.length) lote(ops);
+  if (SEL.on) salirSel();
+  vib();
+  toast(`${ids.length === 1 ? 'Movida' : ids.length + ' movidas'} a ${campo === 'cat' ? NOMBRE[valor] : valor || 'Sin carpeta'}`, ops.length ? 'Deshacer' : '', () => deshacer('lista'));
+}
+/** Varias operaciones como una sola: se deshacen de golpe */
+function lote(ops) {
+  hacer({ do: () => ops.forEach(o => o.do()), undo: () => ops.slice().reverse().forEach(o => o.undo()) });
+  refrescarLista(); refrescarCosas();
+}
+
+// ---------- Editar: elegir varias a la vez ----------
+const filasSel = () => $$(SEL.donde === 'cosas' ? '#drawers [data-sel]' : '#s-list .pane [data-sel]').filter(f => !f.classList.contains('done') && !f.classList.contains('collapse'));
+function entrarSel(donde, id) {
+  if (donde === 'cosas' && S.local.vistaCosas !== 'carpetas') { S.local.vistaCosas = 'carpetas'; persist(); }
+  SEL.on = true; SEL.donde = donde; SEL.ids = new Set(id ? [id] : []);
+  document.body.classList.add('seleccionando');
+  $('#app').dataset.sel = donde;
+  vib();
+  if (donde === 'cosas') pintarCajones(false); else { const p = paneActual(); if (p) { p.innerHTML = paneHTML(S.cat); p.querySelectorAll('[data-gem]').forEach(pintarGema); } }
+  marcarSel();
+  $('#selbar').classList.add('on');
+}
+function salirSel() {
+  if (!SEL.on) return;
+  const donde = SEL.donde;
+  SEL.on = false; SEL.ids = new Set();
+  document.body.classList.remove('seleccionando'); delete $('#app').dataset.sel;
+  $('#selbar').classList.remove('on');
+  $$('[data-sel].sel').forEach(f => f.classList.remove('sel'));
+  if (donde === 'cosas') refrescarCosas(); else { const p = paneActual(); if (p) { p.innerHTML = paneHTML(S.cat); p.querySelectorAll('[data-gem]').forEach(pintarGema); } }
+}
+function marcarSel() {
+  if (!SEL.on) return;
+  const filas = filasSel(), hay = new Set(filas.map(f => f.dataset.id));
+  [...SEL.ids].forEach(id => { if (!hay.has(id)) SEL.ids.delete(id); });
+  filas.forEach(f => f.classList.toggle('sel', SEL.ids.has(f.dataset.id)));
+  const n = SEL.ids.size;
+  $('#sel-n').textContent = n ? `${n} ${n === 1 ? 'elegida' : 'elegidas'}` : 'Elige tareas';
+  $('#sel-todo').textContent = filas.length && filas.every(f => SEL.ids.has(f.dataset.id)) ? 'Ninguna' : 'Todas';
+  $$('#selbar .sa').forEach(b => b.disabled = !n);
+}
+
 (function pulsacionLarga() {
   let t = 0, x = 0, y = 0;
   document.addEventListener('pointerdown', e => {
-    const f = e.target.closest('#s-list .task .front'); clearTimeout(t);
+    clearTimeout(t); t = 0;
+    if (SEL.on) return;
+    const f = e.target.closest('#s-list .task:not(.done), #drawers .crow');
     if (!f || e.target.closest('[data-act="hecho"]')) return;
     x = e.clientX; y = e.clientY;
-    t = setTimeout(() => { arrastrando = true; abrirFila(f.parentElement); setTimeout(() => arrastrando = false, 400); }, 480);
+    t = setTimeout(() => { t = 0; arrastrando = true; abrirPop(f); setTimeout(() => arrastrando = false, 400); }, 450);
   }, { passive: true });
   document.addEventListener('pointermove', e => { if (t && Math.hypot(e.clientX - x, e.clientY - y) > 8) { clearTimeout(t); t = 0; } }, { passive: true });
   ['pointerup', 'pointercancel'].forEach(n => document.addEventListener(n, () => { clearTimeout(t); t = 0; }));
-  document.addEventListener('contextmenu', e => { if (e.target.closest('#s-list .task')) e.preventDefault(); });
+  document.addEventListener('contextmenu', e => { if (e.target.closest('#s-list .task, #drawers .crow')) e.preventDefault(); });
 })();
 
 // ---------- gestos ----------
@@ -1789,6 +1945,8 @@ let arrastrando = false;
   document.addEventListener('pointerdown', e => {
     if (e.button > 0 || deslizando) return;
     const t = e.target;
+    if (POP.id || $('#pop').classList.contains('on')) { g = null; return; }
+    if (SEL.on && !t.closest('#sh-cosas')) { g = null; return; }
     if (t.closest('input,textarea,select')) return;
     const enApp = $('#app').getBoundingClientRect();
     const x = e.clientX - enApp.left;
@@ -1945,6 +2103,13 @@ let arrastrando = false;
 
 // ---------- títulos con palabra clave, grupo, personas y rayo ----------
 const BOLT = '<svg class="bolt" width="9" height="13" viewBox="0 0 9 13" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" aria-label="Rápida"><path d="M5.2 1L1.2 7.3h3l-.7 4.7 4.2-6.6H4.6z"/></svg>';
+const ICO3 = {
+  abrir: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 3.5h4v4M14.5 3.5L8 10M12.5 10.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/></svg>',
+  sel: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="6.5"/><path d="M6.2 9.2l1.9 1.9 3.7-3.9"/></svg>',
+  mover: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h3l1.5 1.5H14a1.5 1.5 0 0 1 1.5 1.5v5.5A1.5 1.5 0 0 1 14 14H4a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M7.5 9.6h4M9.9 7.8l1.7 1.8-1.7 1.8"/></svg>',
+  hoy: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="3.2"/><path d="M9 1.8v1.6M9 14.6v1.6M1.8 9h1.6M14.6 9h1.6M3.9 3.9l1.1 1.1M13 13l1.1 1.1M3.9 14.1L5 13M13 5l1.1-1.1"/></svg>',
+  borrar: '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 5.5h13M8 5.5V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M5.5 5.5l.8 10.2a1.5 1.5 0 0 0 1.5 1.3h4.4a1.5 1.5 0 0 0 1.5-1.3l.8-10.2"/></svg>'
+};
 const ICO2 = {
   phone: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 1.8h2.3l1.1 3-1.5 1a7.5 7.5 0 0 0 3.6 3.6l1-1.5 3 1.1v2.3a1.4 1.4 0 0 1-1.5 1.4A11.6 11.6 0 0 1 1.8 3.3a1.4 1.4 0 0 1 1.4-1.5z"/></svg>',
   wa: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.3 13.7l.8-2.8A6.2 6.2 0 1 1 5.4 13z"/><path d="M6 5.6c0 2.3 1.9 4.3 4.3 4.4l.8-1-1.4-.7-.6.6a3.4 3.4 0 0 1-1.7-1.7l.6-.6-.7-1.4-1 .4z"/></svg>',

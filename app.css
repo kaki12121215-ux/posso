@@ -495,3 +495,84 @@ label.srow{position:relative}
 .chip.nueva{border-style:dashed;color:var(--deep);cursor:pointer;transition:transform .15s,background-color .2s}
 .chip.nueva svg{fill:var(--deep)}
 .chip.nueva:active{transform:scale(.95)}
+
+/* ---------- Tus cosas: cabecera con selector de vista ---------- */
+.cosas-head{display:flex;align-items:center;justify-content:space-between;margin:0 4px 14px}
+.cosas-head .cosas-t{margin:0}
+.cosas-tools{display:flex;align-items:center;gap:8px}
+.vista-tg{display:flex;padding:3px;border-radius:14px;background:var(--soft);position:relative}
+.vista-tg button{width:38px;height:32px;border-radius:11px;display:flex;align-items:center;justify-content:center;color:var(--ink3);transition:background-color .25s var(--ease),color .25s,box-shadow .25s}
+.vista-tg button.on{background:var(--surface);color:var(--deep);box-shadow:0 2px 8px -4px rgba(15,61,57,.35)}
+.vista-tg button:active{transform:scale(.94)}
+.sel-btn{font-size:14px;font-weight:600;color:var(--deep);padding:7px 12px;border-radius:12px;background:var(--soft);transition:transform .15s}
+.sel-btn:active{transform:scale(.95)}
+.headcard{position:relative}
+.sel-btn.hc{position:absolute;top:14px;right:14px;background:rgba(255,255,255,.55)}
+[data-theme="dark"] .sel-btn.hc{background:rgba(255,255,255,.08)}
+
+/* ---------- vista por carpetas ---------- */
+#drawers.carpetas{display:flex;flex-direction:column;gap:12px}
+.carp{background:var(--surface);border:1px solid var(--line);border-radius:22px;padding:12px 4px 4px;animation:rise .4s var(--ease) calc(var(--i,0) * .05s) both}
+.carp-h{display:flex;align-items:center;gap:8px;padding:2px 14px 8px;color:var(--ink2)}
+.carp-h svg{width:18px;height:18px;flex:none}
+.carp-h b{font-size:15px;font-weight:700;color:var(--ink);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.carp-h span{font-size:14px;font-weight:600;color:var(--ink3)}
+.carp-vacia{font-size:13px;color:var(--ink3);padding:4px 14px 12px}
+.crow{position:relative;display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-radius:16px;transition:background-color .2s,transform .2s var(--ease),box-shadow .2s}
+.crow + .crow::before{content:"";position:absolute;left:46px;right:14px;top:0;height:1px;background:var(--line)}
+.crow:active{background:var(--soft)}
+.crow .cck{padding:0;flex:none;margin-top:1px}
+.crow .cb{flex:1;min-width:0}
+.crow .t{font-size:15px;line-height:1.3;word-break:break-word}
+.crow .cm{font-size:12.5px;color:var(--ink3);margin-top:3px}
+.crow .cm .u{color:var(--urg-txt)}
+.crow.prov{animation:provisional 1.8s ease-in-out infinite}
+.crow.collapse{transition:height .3s var(--ease),opacity .25s,padding .3s;opacity:0;padding-top:0;padding-bottom:0}
+
+/* ---------- pulsación larga: la tarea se levanta y sale un menú ---------- */
+.pop-scrim{position:absolute;inset:0;z-index:44;background:rgba(10,30,28,.12);opacity:0;pointer-events:none;transition:opacity .2s}
+.pop-scrim.on{opacity:1;pointer-events:auto}
+.pop{position:absolute;z-index:46;min-width:214px;max-width:calc(100% - 24px);max-height:70%;overflow-y:auto;padding:6px;border-radius:18px;
+  background:var(--surface);border:1px solid var(--line);box-shadow:0 18px 44px -18px rgba(10,40,37,.5),0 2px 6px -2px rgba(10,40,37,.12);
+  opacity:0;transform:scale(.86);pointer-events:none;transition:opacity .16s ease,transform .22s cubic-bezier(.3,1.3,.5,1)}
+.pop.on{opacity:1;transform:none;pointer-events:auto}
+.pop button{display:flex;align-items:center;justify-content:space-between;gap:16px;width:100%;padding:11px 12px;border-radius:12px;font-size:15.5px;color:var(--ink);text-align:left}
+.pop button svg{color:var(--ink2);flex:none}
+.pop button:active{background:var(--soft)}
+.pop button.del{color:var(--urg-txt)}
+.pop button.del svg{color:var(--urg-txt)}
+.pop button{position:relative}
+.pop button + button::before{content:"";position:absolute;left:12px;right:12px;top:0;height:1px;background:var(--line)}
+.pop button.on{font-weight:700;color:var(--deep)}
+.pop .pop-t{font-size:11.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--ink3);padding:10px 12px 4px}
+.pop .pdot{width:9px;height:9px;border-radius:50%;flex:none}
+.pop button:has(.pdot){justify-content:flex-start;gap:12px}
+.levantada{position:relative;z-index:45;transform:scale(1.02);box-shadow:0 14px 34px -16px rgba(10,40,37,.45);border-radius:16px}
+.task.levantada .front{background:var(--surface);border-radius:16px}
+.task.levantada .front::after{display:none}
+.crow.levantada{background:var(--surface)}
+
+/* ---------- Editar: elegir varias ---------- */
+.selmk{display:none;width:22px;height:22px;border-radius:50%;border:1.6px solid var(--ink3);flex:none;align-self:flex-start;margin-top:1px;transition:background-color .18s,border-color .18s,transform .18s}
+.seleccionando [data-sel] .selmk{display:block}
+.seleccionando [data-sel] .front > button[data-act="hecho"],.seleccionando [data-sel] .cck{display:none}
+.seleccionando [data-sel].sel .selmk{background:var(--deep);border-color:var(--deep);transform:scale(1.05);
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22'%3E%3Cpath d='M6.5 11.3l3 3 6-6.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-size:100%}
+.seleccionando [data-sel].sel .front,.seleccionando .crow.sel{background:color-mix(in srgb,var(--deep) 8%,var(--bg))}
+.seleccionando .crow.sel{background:color-mix(in srgb,var(--deep) 9%,var(--surface))}
+.seleccionando [data-sel] .subs{pointer-events:none;opacity:.7}
+.seleccionando .gem-dock,.seleccionando #sh-cosas .hechas-fila{display:none}
+.seleccionando .list-note{display:none}
+.selbar{position:absolute;left:12px;right:12px;bottom:calc(12px + var(--sb));z-index:30;border-radius:24px;padding:10px 10px 8px;
+  background:var(--surface);border:1px solid var(--line);box-shadow:0 18px 40px -20px rgba(10,40,37,.55);
+  transform:translateY(140%);transition:transform .34s cubic-bezier(.2,.8,.2,1)}
+.selbar.on{transform:none}
+.selbar-top{display:flex;align-items:center;justify-content:space-between;padding:0 6px 8px}
+.selbar-top b{font-size:14.5px;font-weight:700}
+.selbar-top button{font-size:14px;font-weight:600;color:var(--deep);padding:4px 2px}
+.selbar-acts{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.selbar .sa{display:flex;flex-direction:column;align-items:center;gap:4px;padding:9px 4px 8px;border-radius:16px;background:var(--soft);font-size:13px;font-weight:600;color:var(--deep);transition:opacity .2s,transform .15s}
+.selbar .sa:active{transform:scale(.96)}
+.selbar .sa.del{color:var(--urg-txt);background:var(--urg-bg)}
+.selbar .sa:disabled{opacity:.4}
+.seleccionando #drawers{padding-bottom:calc(170px + var(--sb))}
