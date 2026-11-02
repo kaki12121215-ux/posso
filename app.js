@@ -19,7 +19,7 @@ const SUB = {
 const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const DIA_MS = 864e5;
-const VERSION = '2.1.3';
+const VERSION = '2.1.4';
 // Esta copia de Posso es la versión:
 //   'directo' = «Con texto en directo»: el dictado del iPhone escribe mientras hablas (más rápida; suena el micro de Apple)
 //   'audio'   = «Sin dictado»: solo graba el audio y Gemini lo transcribe (sin sonido; unos segundos más lenta)
@@ -1550,6 +1550,7 @@ function ordenarAqui(texto) {
   // dictado sin comas ni puntos: estas palabras siempre empiezan otra cosa
   tx = tx.replace(/\s+(?:así que|asi que|ah y|ah,? y|y ah|y luego|y después|y despues|y también|y tambien)\s+/gi, ' ;¦');
   tx = tx.replace(/\s+ah(?=\s|$)/gi, ' ; ');
+  tx = tx.replace(/\s+(?:y\s+)?(?:bueno\s+|eso\s+)?(?:también|tambien)\s+(?=[a-záéíóúñ]+(?:ar|er|ir)(?:le|les|la|lo|me|se)?\s)/gi, ' ;¦');   // «… y eso también comprar…»
   // «… de segundo mañana a las cinco gimnasio», «… acuario todos los domingos a las 8 preparar la semana»: la fecha empieza otra idea
   const FECHA_MITAD = '(?:(?:todos los|todas las|cada) (?:' + DIA + 's?|d[ií]as|mañanas|tardes|noches|semanas?|\\S+ d[ií]as)|pasado mañana|mañana|hoy|esta tarde|esta noche|(?:el |este )' + DIA + ')' +
     '(?: (?:a las \\S+(?: y media| y cuarto| menos cuarto)?(?: de la (?:mañana|tarde|noche))?|por la (?:mañana|tarde|noche)|a (?:primera|segunda|tercera|[uú]ltima) hora))?';
