@@ -19,7 +19,7 @@ const SUB = {
 const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const DIA_MS = 864e5;
-const VERSION = '2.1.2';
+const VERSION = '2.1.3';
 // Esta copia de Posso es la versión:
 //   'directo' = «Con texto en directo»: el dictado del iPhone escribe mientras hablas (más rápida; suena el micro de Apple)
 //   'audio'   = «Sin dictado»: solo graba el audio y Gemini lo transcribe (sin sonido; unos segundos más lenta)
@@ -1507,7 +1507,7 @@ function ordenarAqui(texto) {
   };
   const NUEVA = new RegExp('^(?:tengo que|tendr[ií]a que|hay que|deber[ií]a|necesito|quiero|me gustar[ií]a|me apetecer[ií]a|no (?:me )?(?:puedo )?olvid|acu[eé]rdate|recordar|mañana|pasado mañana|hoy|esta (?:tarde|noche|semana)|la semana que viene|el (?:fin de semana|finde|mes que viene)|(?:el |este |el pr[oó]ximo )?' + DIA +
     '|antes del?|todos los|todas las|cada|de lunes|ll[eé]vale|tr[aá]eme|p[aá]sate|ac[uú]erdate|lo de|lo del|a primera hora|alg[uú]n d[ií]a|un d[ií]a de estos|[a-záéíóúñ]+(?:ar|er|ir)(?:le|les|la|lo|me|te|se)?(?=$|[\\s,.:]))', 'i');
-  const NO_VERBO = /^(?:azucar|collar|lugar|hogar|bar|mar|par|taller|alfiler|mujer|placer|ayer|deber|elixir|faquir|nadir|super|master|poster)(?=$|[\s,.:])|^[a-zñ]*[áéóú][a-záéíóúñ]*(?:ar|er|ir)(?=$|[\s,.:])/i;   // con tilde no es un infinitivo («máster», «súper»)
+  const NO_VERBO = /^(?:azucar|collar|lugar|hogar|bar|mar|par|taller|alfiler|mujer|placer|ayer|deber|elixir|faquir|nadir|super|master|poster|alquiler|solar|familiar|particular|popular|militar|pilar|altar|ejemplar|dolar|celular|lunar|hangar|ser|primer|tercer)(?=$|[\s,.:])|^[a-zñ]*[áéóú][a-záéíóúñ]*(?:ar|er|ir)(?=$|[\s,.:])/i;   // con tilde no es un infinitivo («máster», «súper»)
   const esNueva = t => NUEVA.test(t) && !NO_VERBO.test(t);
   const VERBO = /(?:^|\s)(?:tengo|hay|es|est[aá]|son|voy|vamos|comemos|cenamos|dijo|dice|entregaron|quedan?|tiene|tienen|ser[aá]|hago|caduca|gotea|falta|faltan)(?=$|[\s,.])/i;
   const COMPRA = /^(?:(?:tengo que|hay que|necesito|tendr[ií]a que)\s+)?(?:hacer la compra|compra(?:r)?|apunta(?:r)? en la (?:lista de la )?compra|a(?:ñ|n)ad(?:e|ir) a la (?:lista de la )?compra|a la (?:lista de la )?compra|en la lista de la compra|(?:me|nos) falta(?:n)?|se (?:ha|han) acabado|queda poco de)\b[:\s]*/i;
@@ -1516,13 +1516,15 @@ function ordenarAqui(texto) {
   const FECHA_INI = new RegExp('^(?:pasado mañana|mañana|hoy|esta tarde|esta noche|(?:el |este |el pr[oó]ximo )?' + DIA + ')(?: a primera hora| a las \\S+(?: y media| y cuarto| menos cuarto)?| por la (?:mañana|tarde|noche))?\\b', 'i');
   // 0 · listas entre paréntesis o tras dos puntos se guardan aparte para que las comas no las rompan
   const LISTAS = [];
-  const partir = s => s.split(/\s*,\s*|\s+y\s+|\s+e\s+(?=[ií])/).map(x => limpiar(x).replace(/^(?:(?:me|nos) falta(?:n)?|se (?:ha|han) acabado|queda(?:n)? poco de|(?:un )?poco de)\s+/i, '').replace(/^(?:unos?|unas?)\s+(?=\S+s\b)/i, '').replace(/^(?:el|la|los|las)\s+/i, '')).filter(x => x.length > 1).map(cap);
+  const partir = s => s.split(/\s*,\s*|\s+y\s+|\s+e\s+(?=[ií])/).map(x => limpiar(x).replace(/^(?:(?:me|nos) falta(?:n)?|se (?:ha|han) acabado|queda(?:n)? poco de|(?:un )?poco de)\s+/i, '').replace(/^(?:unos?|unas?)\s+(?=\S+s\b)/i, '').replace(/^(?:el|la|los|las)\s+/i, '').replace(/\s+(?:que (?:no (?:queda|hay)|se (?:est[aá]|ha) acabad?o?).*|ah|eh|vale)$/i, '')).filter(x => x.length > 1).map(cap);
   let tx = ' ' + texto.replace(/\s+/g, ' ') + ' ';
   // correcciones al hablar: «el jueves, no, perdón, el viernes» → «el viernes»
   // dudas: «mandar el… el… bueno, el documento» → «mandar el documento»
   for (let k = 0; k < 3; k++) tx = tx.replace(/\b(el|la|los|las|un|una|de|del|a|al|que|en|con|para|y|mi|su)\s*…+\s*(?:\1\s*…+\s*)*(?:(?:bueno|eh|em|o sea|esto),?\s*)?(?:\1\s+)?/gi, '$1 ');
   // correcciones: «el jueves, no, perdón, el viernes» · «a las seis, mejor dicho a las siete» · «Iker, digo, Unai»
-  tx = tx.replace(/([^.,;:¦]+?)\s*,\s*(?:no\s*,\s*(?:perd[oó]n\s*,?\s*)?|(?:no\s*,?\s*)?(?:perd[oó]n|mejor dicho|digo|quiero decir|no espera|bueno no)\s*,?\s+)([^.,;:]+)/gi, (m, x, y) => {
+  tx = tx.replace(/([^.,;:¦]+?)\s*,\s*(?:no\s*,\s*(?:perd[oó]n\s*,?\s*)?|(?:no\s*,?\s*)?(?:perd[oó]n|mejor dicho|digo|quiero decir|no espera|bueno no)\s*,?\s+)([^.,;:]+)/gi, corregir);
+  tx = tx.replace(/([^.,;:¦]+?)\s+(?:digo|mejor dicho|quiero decir|perd[oó]n)\s+([^.,;:]+)/gi, corregir);
+  function corregir(m, x, y) {
     const yy = y.trim().replace(/^mejor\s+/i, ''), pal = yy.split(/\s+/), xw = x.trim().split(/\s+/);
     if (esNueva(yy) && !/^(?:el|la|a)\s/i.test(yy)) return ' ' + yy;                       // «ir al súper, bueno no, mejor pedirlo online»
     for (let n = Math.min(2, pal.length); n >= 1; n--) {                                       // se cambia desde la palabra que se repite
@@ -1530,9 +1532,9 @@ function ordenarAqui(texto) {
       for (let k = xw.length - n; k >= 0; k--) if (xw.slice(k, k + n).join(' ').toLowerCase() === clave) return ' ' + xw.slice(0, k).concat(pal).join(' ');
     }
     return ' ' + (xw.length > 1 ? xw.slice(0, -1).concat(pal) : pal).join(' ');               // «comprar tres, no, cuatro botellas»
-  });
+  }
   tx = tx.replace(/\(([^()]{3,})\)/g, (m, d) => /,|\sy\s/.test(d) ? ` __L${LISTAS.push(partir(d)) - 1}__ ` : m);
-  tx = tx.replace(/:\s*([^.;:!?]+)/g, (m, d) => {
+  tx = tx.replace(/(?<!\d):(?!\d)\s*([^.;:!?]+)/g, (m, d) => {
     const trozos = d.split(/\s*,\s*|\s+y\s+/).map(limpiar).filter(Boolean);
     if (trozos.length < 2 || trozos.some(x => esNueva(x) && !/^el de |^la de /i.test(x))) return ' ;; ' + d;   // son tareas, no cosas
     return ` __L${LISTAS.push(partir(d)) - 1}__ `;
@@ -1545,8 +1547,32 @@ function ordenarAqui(texto) {
     if (FECHA_INI.test(p) || /^(?:hoy|mañana|pasado mañana|esta semana)$/i.test(p)) return ini + partes.map(x => p + ' ' + x).join(' ; ');
     return ini + (p ? p + ', ' : '') + partes.join(' ; ');
   });
+  // dictado sin comas ni puntos: estas palabras siempre empiezan otra cosa
+  tx = tx.replace(/\s+(?:así que|asi que|ah y|ah,? y|y ah|y luego|y después|y despues|y también|y tambien)\s+/gi, ' ;¦');
+  tx = tx.replace(/\s+ah(?=\s|$)/gi, ' ; ');
+  // «… de segundo mañana a las cinco gimnasio», «… acuario todos los domingos a las 8 preparar la semana»: la fecha empieza otra idea
+  const FECHA_MITAD = '(?:(?:todos los|todas las|cada) (?:' + DIA + 's?|d[ií]as|mañanas|tardes|noches|semanas?|\\S+ d[ií]as)|pasado mañana|mañana|hoy|esta tarde|esta noche|(?:el |este )' + DIA + ')' +
+    '(?: (?:a las \\S+(?: y media| y cuarto| menos cuarto)?(?: de la (?:mañana|tarde|noche))?|por la (?:mañana|tarde|noche)|a (?:primera|segunda|tercera|[uú]ltima) hora))?';
+  tx = tx.replace(new RegExp('(\\S+)\\s+(' + FECHA_MITAD + ')\\s+(\\S+)', 'gi'), (m, ant, f, sig, off, str) => {
+    const ini = Math.max(str.lastIndexOf(',', off), str.lastIndexOf('.', off), str.lastIndexOf(';', off), str.lastIndexOf('¦', off), 0);
+    const antes = str.slice(ini, off + ant.length).replace(/^[.,;¦\s]+/, '');
+    const palabras = antes.split(/\s+/).filter(Boolean);
+    const conVerbo = palabras.some(w => /^[a-záéíóúñ]+(?:ar|er|ir)(?:le|les|la|lo|me|se)?$/i.test(w) && !NO_VERBO.test(w));
+    if (palabras.length < 3 || !conVerbo || /^(?:la|de|por|del|el|que|a|al|para|y|o)$/i.test(ant) ||
+      /^(?:a|al|con|para|de|del|en|que|y|o|e|me|te|se|le|lo|la|las|los|el|sin|por|hasta|antes|menos|media|cuarto)$/i.test(sig)) return m;
+    return ant + ' ; ' + f + ' ' + sig;
+  });
+  // «contestar el correo del máster subir la tarea»: dos infinitivos seguidos sin «y» son dos cosas
+  tx = tx.replace(/(\S+)\s+(?=([a-záéíóúñ]+(?:ar|er|ir)(?:le|les|la|lo|me|se)?)\s)/gi, (m, ant, v, off, str) => {
+    if (v[0] !== v[0].toLowerCase() || NO_VERBO.test(v) || /^(?:olvid[ae]s?|acuerd[eo]|recuerd[ae]s?|a|al|de|del|para|por|que|sin|y|o|e|me|te|se|le|lo|la|gustar[ií]a|encantar[ií]a|apetece|quiero|quiere|necesito|puedo|debo|voy|vamos|hay|tengo|tienes|va|van|dejo|empezar|acabar|volver|antes|despu[eé]s|ir|hacer|poder|tener|sin|no|ya|tambi[eé]n|mejor|igual|que|hasta)$/i.test(ant) ||
+      (/(?:ar|er|ir)$/i.test(ant) && !NO_VERBO.test(ant)) || /(?:ía|ado|ido)$/i.test(ant)) return m;
+    const ini = Math.max(str.lastIndexOf(',', off), str.lastIndexOf('.', off), str.lastIndexOf(';', off), str.lastIndexOf('¦', off), 0);
+    const antes = str.slice(ini, off).replace(/^[.,;¦\s]+/, '').split(/\s+/).filter(Boolean);
+    if (antes.length < 2 || !antes.some(w => /^[a-záéíóúñ]+(?:ar|er|ir)(?:le|les|la|lo|me|se)?$/i.test(w) && !NO_VERBO.test(w))) return m;
+    return ant + ' ; ';
+  });
   // «… y el lunes hay…», «… y subir…»: una idea nueva aunque vaya con «y»
-  tx = tx.replace(new RegExp('\\s+y\\s+(?=(?:el |este |mañana|pasado mañana|hoy |luego|despu[eé]s|tambi[eé]n|' + DIA + '|por la (?:mañana|tarde|noche)|ll[eé]vale|tr[aá]eme|p[aá]sate|[a-záéíóúñ]+(?:ar|er|ir)(?:le|les|la|las|lo|los|me|se)?\\s))', 'gi'), (m, k, s) => {
+  tx = tx.replace(new RegExp('\\s+y\\s+(?=(?:el |este |mañana|pasado mañana|hoy |luego|despu[eé]s|tambi[eé]n|alg[uú]n d[ií]a|me gustar|' + DIA + '|por la (?:mañana|tarde|noche)|ll[eé]vale|tr[aá]eme|p[aá]sate|[a-záéíóúñ]+(?:ar|er|ir)(?:le|les|la|las|lo|los|me|se)?\\s))', 'gi'), (m, k, s) => {
     const sig = s.slice(k + m.length, k + m.length + 20), ant = s.slice(Math.max(0, k - 12), k);
     if (new RegExp(DIA + 's?$', 'i').test(ant) && new RegExp('^(?:los )?' + DIA, 'i').test(sig)) return m;   // «los martes y jueves»
     return NO_VERBO.test(sig) ? m : ' ;¦';
@@ -1676,7 +1702,7 @@ function ordenarAqui(texto) {
     let a;
     do {
       a = tit;
-      tit = tit.replace(/^(?:de que|sin falta|a mediod[ií]a|el (?:finde|fin de semana)|es|hay(?! que)|tengo(?! que)|(?:tengo que )?acordarme de|me apetece(?: un mont[oó]n| mucho)?|me encantar[ií]a|me da rabia que|no s[eé] si|se me (?:ha )?olvid(?:ado|ó)|que no se me olvide|no se me puede olvidar|tengo que|tendr[ií]a que|hay que|deber[ií]a|necesito|quiero|me gustar[ií]a|me apetecer[ií]a|no (?:me )?(?:puedo )?olvidar(?:me)? de|acu[eé]rdate de|recordar)\s+/i, '')
+      tit = tit.replace(/^(?:que no se me olvid[ae](?: de)?|de que|sin falta|a mediod[ií]a|el (?:finde|fin de semana)|es|hay(?! que)|tengo(?! que)|(?:tengo que )?acordarme de|me apetece(?: un mont[oó]n| mucho)?|me encantar[ií]a|me da rabia que|no s[eé] si|se me (?:ha )?olvid(?:ado|ó)|que no se me olvide|no se me puede olvidar|tengo que|tendr[ií]a que|hay que|deber[ií]a|necesito|quiero|me gustar[ií]a|me apetecer[ií]a|no (?:me )?(?:puedo )?olvidar(?:me)? de|acu[eé]rdate de|recordar)\s+/i, '')
         .replace(/^(?:alg[uú]n d[ií]a|un d[ií]a de estos)\s+/i, '')
         .replace(/^(?:todas las (?:mañanas|noches|tardes)|cada (?:mañana|noche|tarde)|todos los d[ií]as|cada d[ií]a|de lunes a viernes|entre semana|cada (?:\S+ )?(?:d[ií]as|semanas?|mes(?:es)?)|todas las semanas|todos los meses)\s+/i, '')
         .replace(new RegExp('^el (?:primer|segundo|tercer|cuarto|[uú]ltimo) ' + DIA + ' de cada mes\\s+', 'i'), '')
@@ -1713,8 +1739,9 @@ function ordenarAqui(texto) {
   return ideas.filter(i => i.titulo && !/^(?:nada|eso|cosas|mira|vale|bueno|ya est[aá]|y ya|los|las|el|la)$/i.test(i.titulo) && (!i.lista || i.items.length)).map(i => {
     const l = (i.titulo + ' ' + i.frase + ' ' + (i.items || []).join(' ')).toLowerCase();
     let carpeta = '';
-    if (/instituto|\bclases?\b(?! de)|alumn|familias de|evaluaci|examen(?! de conducir)|ex[aá]menes|pr[aá]cticas|\d\s?º\s?[a-e]\b|claustro|tutor|m[aá]ster|idoceo|coordinador|excursi|jefe de estudios|notas de|\binsti\b|jefatura|programaci[oó]n|aula de|departamento|r[uú]bricas|recuperaci[oó]n|tercera hora|primera evaluaci|tutor[ií]a/.test(l) && C.includes('Instituto')) carpeta = 'Instituto';
+    if (/instituto|\bclases?\b(?! de)|alumn|familias de|evaluaci|examen(?! de conducir)|ex[aá]menes|pr[aá]cticas|\d\s?º\s?[a-e]\b|claustro|tutor|m[aá]ster|idoceo|coordinador|excursi|jefe de estudios|notas de|\binsti\b|jefatura|programaci[oó]n|aula de|departamento|r[uú]bricas|recuperaci[oó]n|tercera hora|primera evaluaci|tutor[ií]a|rob[oó]tica|\bde (?:primero|segundo|tercero|cuarto)\b/.test(l) && C.includes('Instituto')) carpeta = 'Instituto';
     else if (/\bama\b|\baita\b|\babuel[oa]s?\b|\bmis? (?:madre|padre|padres|herman|abuel|prim|t[ií][oa]|sobrin|suegr|cuñad|hij|niet)|familia\b|boda|bautizo|nochebuena|navidad en casa/.test(l) && C.includes('Familia')) carpeta = 'Familia';
+    else if (i.compra && C.includes('Supermercado')) carpeta = 'Supermercado';
     else if (i.compra || /\bcasa\b|piso|limpiar|papeles|lavadora|lavavajillas|nevera|fontanero|electricista|factura|alquiler|casero|grifo|caldera|calefacci|humedad|\bba[ñn]o\b|\b(?:la|de la) cocina\b|\bpintar\b|plantas|\bregar\b|comunidad|basura|reciclaj|taller|coche|peces|acuario|trastero|mudanza/.test(l)) carpeta = C.includes('Casa') ? 'Casa' : '';
     if (i.lista) return Object.assign({ titulo: i.titulo, frase: i.frase, cat: i.cat, tipo: 'lista', clave: i.titulo, carpeta, urgente: i.urgente, aviso: i.aviso || '',
       items: i.items.map(t => ({ id: uid(), t: cap(String(t)), hecho: false })) }, i.repetir ? { repetir: i.repetir } : {});
@@ -1774,7 +1801,7 @@ function ordenarAqui(texto) {
       const dd = (d - hoy) / 864e5; r.cat = dd < 1 && d.getDate() === hoy.getDate() ? 'hoy' : dd <= 10 ? 'semana' : 'algun'; return r;
     }
     const antesN = l.match(/(?:antes del?|hasta el|para el) (?:d[ií]a )?(\d{1,2})\b(?! de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre))/);
-    if (antesN) { const d = new Date(hoy); d.setDate(+antesN[1]); if (d < hoy) d.setMonth(d.getMonth() + 1); r.limite = isoDia(d); const av = new Date(d); av.setDate(av.getDate() - 2); if (av < hoy) av.setTime(en(1).getTime()); av.setHours(9, 0, 0, 0); r.aviso = isoLocal(av); r.cat = (d - hoy) / 864e5 <= 7 ? 'semana' : 'algun'; return r; }
+    if (antesN) { const d = new Date(hoy); d.setDate(+antesN[1]); if (d < hoy) d.setMonth(d.getMonth() + 1); r.limite = isoDia(d); const av = new Date(d); av.setDate(av.getDate() - 2); if (av < hoy) av.setTime(en(1).getTime()); av.setHours(9, 0, 0, 0); r.aviso = isoLocal(av); r.cat = (d - hoy) / 864e5 <= 10 ? 'semana' : 'algun'; return r; }
     const antes = l.match(new RegExp('antes del? (' + DIA + ')', 'i'));
     if (antes) { const d = proximo(ds[antes[1]]); r.limite = isoDia(d); const av = new Date(d); av.setDate(av.getDate() - 2); if (av < hoy) av.setTime(en(1).getTime()); av.setHours(9, 0, 0, 0); r.aviso = isoLocal(av); r.cat = 'semana'; return r; }
     m = l.match(new RegExp('\\b(' + DIA + ')\\b', 'i'));
