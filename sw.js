@@ -2,7 +2,7 @@
  * - Guarda la app para que abra al momento (y sin conexión).
  * - Recibe los avisos: llega un "toque" sin contenido, pregunta a tu Apps Script qué decir y lo muestra.
  */
-const VERSION = 'posso-2.0.5-directo';
+const VERSION = 'posso-2.1.2-directo';
 const ARCHIVOS = ['./', 'index.html', 'app.css', 'app.js', 'gema.js', 'manifest.webmanifest', 'lista.html',
   'fonts/PlusJakartaSans.woff', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/favicon-32.png'];
 
@@ -19,7 +19,7 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   e.respondWith(
-    fetch(e.request).then(r => {
+    fetch(e.request, { cache: 'no-cache' }).then(r => {   // pregunta siempre a GitHub si hay versión nueva (sin esperar a la caché de 10 min)
       if (r.ok) { const copia = r.clone(); caches.open(VERSION).then(c => c.put(e.request, copia)); }
       return r;
     }).catch(() => caches.match(e.request, { ignoreSearch: true }).then(r => r || caches.match('index.html')))

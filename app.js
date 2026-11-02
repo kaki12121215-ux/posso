@@ -1,4 +1,4 @@
-/* POSSO · la app — versión «Con texto en directo»
+/* POSSO · la app
  * Todo en un archivo: datos, conexión con tu Google (Apps Script), voz, pantallas y animaciones.
  */
 'use strict';
@@ -8,6 +8,8 @@
 // =====================================================================
 const CATS = ['hoy', 'semana', 'algun', 'olvidar'];
 const NOMBRE = { hoy: 'Hoy', semana: 'Esta semana', algun: 'Algún día', olvidar: 'Olvidar' };
+const POP = { id: null, fila: null };                    // menú de pulsación larga
+const SEL = { on: false, donde: '', ids: new Set() };   // modo Editar (varias a la vez)
 const SUB = {
   hoy: 'Con esto, el día está cubierto.',
   semana: 'Te aviso de cada cosa el día que toca.',
@@ -17,7 +19,7 @@ const SUB = {
 const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const DIA_MS = 864e5;
-const VERSION = '2.0';
+const VERSION = '2.1.2';
 // Esta copia de Posso es la versión:
 //   'directo' = «Con texto en directo»: el dictado del iPhone escribe mientras hablas (más rápida; suena el micro de Apple)
 //   'audio'   = «Sin dictado»: solo graba el audio y Gemini lo transcribe (sin sonido; unos segundos más lenta)
@@ -156,7 +158,15 @@ async function apiYa(accion, datos, espera) {
   } catch (e) {
     throw new Error(e.name === 'AbortError' ? 'Tu Google está tardando demasiado en responder. Prueba otra vez en un momento.' : (e.message || 'Load failed'));
   } finally { clearTimeout(t); }
-  const j = await r.json();
+  const txt = await r.text();
+  let j;
+  try { j = JSON.parse(txt); }
+  catch (e) {     // Google ha devuelto una página en vez de datos
+    const titulo = ((txt.match(/<title>([^<]*)/i) || [])[1] || '').trim();
+    console.log('Posso · respuesta rara de Google', r.status, txt.slice(0, 600));
+    if (/autoriz|authoriz|accounts\.google|iniciar sesi|sign in/i.test(txt)) throw new Error('Tu Google pide permisos otra vez. Abre el script, ejecuta probarGemini y acepta.');
+    throw new Error('Google ha dado un error' + (titulo ? ' (' + titulo + ')' : r.status ? ' (' + r.status + ')' : '') + '. Mira Ejecuciones en tu script.');
+  }
   if (j.error) throw new Error(j.error);
   return j;
 }
@@ -403,6 +413,7 @@ function ir(id, modo = 'push', { sinPila = false } = {}) {
   if (modo === 'push' && HOJAS.includes(id)) modo = 'hoja';
   if (reduceMotion() && modo !== 'none') modo = 'fade';
   if (vieja && !sinPila && (modo === 'push' || modo === 'hoja')) pila.push({ id: vieja.id, hoja: modo === 'hoja' });
+  salirSel(); cerrarPop();
   cerrarHoja('sh-cosas', modo === 'none'); cerrarHoja('sh-idea', modo === 'none');
   $('#toast').classList.remove('on');
 
@@ -525,6 +536,7 @@ function abrirHoja(id, instantanea) {
 }
 function cerrarHoja(id, rapido) {
   const sh = $('#' + id); if (!sh || !sh.classList.contains('on')) return;
+  if (id === 'sh-cosas' && SEL.donde === 'cosas') salirSel();
   const scrim = scrimDe(id);
   if (rapido) { sh.style.transition = 'none'; scrim.style.transition = 'none'; }
   sh.classList.remove('on', 'drag'); scrim.classList.remove('on');
@@ -562,7 +574,12 @@ function pintarInicio() {
 
 // ---------- Tus cosas (las cuatro tarjetas) ----------
 function pintarCajones(animar = true) {
-  $('#drawers').innerHTML = CATS.map((c, k) => {
+  const vista = S.local.vistaCosas === 'carpetas' ? 'carpetas' : 'bloques';
+  $$('#vista-tg button').forEach(b => b.classList.toggle('on', b.dataset.v === vista));
+  const ed = $('#cosas-editar'); if (ed) { ed.hidden = vista !== 'carpetas'; const en = SEL.on && SEL.donde === 'cosas'; ed.textContent = en ? 'Listo' : 'Editar'; ed.dataset.act = en ? 'sel-off' : 'sel-on'; }
+  $('#drawers').classList.toggle('carpetas', vista === 'carpetas');
+  if (vista === 'carpetas') pintarCarpetas();
+  else $('#drawers').innerHTML = CATS.map((c, k) => {
     const items = pendientes(c);
     const filas = items.slice(0, 2).map(i =>
       `<div class="row${c === 'olvidar' ? ' olv' : ''}">${check(c, false, 18)}<div style="min-width:0"><div class="t">${tituloHTML(i, true)}</div>${meta(i, 'cajon')}</div></div>`).join('');
@@ -577,6 +594,29 @@ function pintarCajones(animar = true) {
   if (fila) { fila.hidden = !nh; fila.querySelector('span').textContent = `Hecho recientemente · ${nh}`; }
   const d = $('#drawers'); d.classList.remove('enter');
   if (animar) { void d.offsetWidth; d.classList.add('enter'); }
+  marcarSel();
+}
+/** Vista por carpetas: cada carpeta con todo lo que tiene pendiente, en una sola pantalla */
+function pintarCarpetas() {
+  const todas = CATS.flatMap(c => pendientes(c));
+  const nombres = S.carpetas.slice();
+  todas.forEach(i => { if (i.carpeta && !nombres.includes(i.carpeta)) nombres.push(i.carpeta); });
+  const grupos = nombres.map(n => ({ n, items: todas.filter(i => i.carpeta === n) }));
+  const sin = todas.filter(i => !i.carpeta);
+  if (sin.length) grupos.push({ n: '', items: sin });
+  $('#drawers').innerHTML = grupos.map((g, k) => `
+    <section class="carp" style="--i:${Math.min(k, 8)}">
+      <div class="carp-h">${ICO.folderL}<b>${g.n ? esc(g.n) : 'Sin carpeta'}</b><span>${g.items.length || ''}</span></div>
+      ${g.items.length ? g.items.map(i => {
+        const c = catDe(i), f = i.aviso ? fechaCorta(i.aviso) : '';
+        return `<div class="crow${i.provisional ? ' prov' : ''}" data-id="${i.id}" data-sel data-act="editar">
+          <span class="selmk"></span>
+          <button class="cck" data-act="hecho" data-id="${i.id}" aria-label="Hecho">${check(c, false, 20)}</button>
+          <div class="cb"><div class="t">${tituloHTML(i, true)}</div>
+            <div class="cm"><span style="color:var(--c-${c})">${NOMBRE[c]}</span>${f ? ` · ${esc(f)}` : ''}${i.urgente ? ' · <span class="u">Urgente</span>' : ''}${(i.items || []).length ? ` · ${i.items.filter(x => !x.hecho).length} dentro` : ''}</div></div>
+        </div>`;
+      }).join('') : `<div class="carp-vacia">Nada pendiente aquí.</div>`}
+    </section>`).join('') || '<div class="carp-vacia" style="padding:30px 6px">Aún no tienes nada.</div>';
 }
 function abrirCosas() { pintarCajones(); abrirHoja('sh-cosas'); vib(); }
 
@@ -610,6 +650,7 @@ function paneHTML(c) {
   const labCol = document.documentElement.dataset.theme === 'dark' ? `var(--c-${c})` : c === 'hoy' ? 'var(--deep)' : 'var(--ink2)';
   const vacio = !items.length;
   const head = `<div class="headcard" style="background:var(--k-${c})">
+      ${pend.length ? `<button class="sel-btn hc" data-act="${SEL.on ? 'sel-off' : 'sel-on'}">${SEL.on ? 'Listo' : 'Editar'}</button>` : ''}
       <div class="lab" style="color:${labCol}">${lab}</div>
       <div class="n">${vacio ? (c === 'hoy' ? 'Nada para hoy.' : 'Nada por aquí.') : !pend.length ? 'Todo hecho.' : `${pend.length} ${pend.length === 1 ? 'cosa' : 'cosas'}`}</div>
       <div class="s">${vacio ? (c === 'hoy' ? 'Aprovecha.' : 'Cuando digas algo así, aparecerá aquí.') : !pend.length ? (c === 'hoy' ? 'Por hoy, ya está.' : 'No queda nada pendiente.') : SUB[c]}</div></div>`;
@@ -617,7 +658,7 @@ function paneHTML(c) {
     ? `<div class="empty-state"><div class="gem" data-gem style="--s:min(200px,26vh);opacity:.9"></div><p>Si te ronda algo, toca la gema y cuéntamelo.</p></div>`
     : `<div class="items">${items.map(i => fila(i, c)).join('')}
       <div class="cheer">Una menos.</div>
-      ${pend.length ? `<div class="list-note">Mantén pulsada una tarea para borrarla${c === 'olvidar' ? ' o pasarla a Hoy' : ''}. Desliza a los lados para cambiar de categoría.</div>` : ''}</div>`;
+      ${pend.length ? `<div class="list-note">Mantén pulsada una tarea para ver sus opciones, o toca Editar para elegir varias. Desliza a los lados para cambiar de categoría.</div>` : ''}</div>`;
   const chips = grupos.length ? `<div class="grupos">${['', ...grupos].map(g =>
     `<button class="csel${g === filtro ? ' on' : ''}" data-act="grupo" data-v="${esc(g)}">${g ? esc(g) : 'Todos'}</button>`).join('')}</div>` : '';
   return head + chips + `<div class="scroll">${cuerpo}</div>`;
@@ -635,7 +676,7 @@ function pintarLista(dir = 0, suave = false) {
   if (suave && paneActual()) return refrescarLista();
   const body = $('#list-body');
   body.innerHTML = '';
-  const p = nuevoPane(S.cat); body.appendChild(p);
+  const p = nuevoPane(S.cat); body.appendChild(p); marcarSel();
   const it = p.querySelector('.items');
   if (it && !reduceMotion()) {
     [...it.children].forEach((e, k) => e.style.setProperty('--i', Math.min(k, 8)));
@@ -659,6 +700,7 @@ function refrescarLista() {
     const n = pane.querySelector('.headcard .n');
     if (n && nAntes && n.textContent !== nAntes) { const t = n.textContent; n.textContent = nAntes; cambiaTexto(n, t); }
     flip(pane, antes);
+    marcarSel();
   };
   if (salen.length && !reduceMotion()) {
     salen.forEach(encoger);
@@ -673,9 +715,8 @@ function encoger(e) {
 function fila(i, c) {
   c = c || S.cat;
   const olv = i.cat === 'olvidar';
-  const under = `<div class="under acciones">${olv ? `<button class="act go" data-act="fila-hoy" data-id="${i.id}">${ICO.arrowR}A Hoy</button>` : ''}<button class="act del" data-act="fila-borrar" data-id="${i.id}">${ICO.trash}Borrar</button></div>`;
-  return `<div class="task${i.hecho ? ' done' : ''}${olv ? ' olv' : ''}${i.provisional ? ' prov' : ''}" data-id="${i.id}">${under}
-    <div class="front"><button data-act="hecho" data-id="${i.id}" style="padding:0;align-self:flex-start" aria-label="Hecho">${check(olv ? 'olvidar' : c, i.hecho, 22)}</button>
+  return `<div class="task${i.hecho ? ' done' : ''}${olv ? ' olv' : ''}${i.provisional ? ' prov' : ''}" data-id="${i.id}" data-sel>
+    <div class="front"><span class="selmk"></span><button data-act="hecho" data-id="${i.id}" style="padding:0;align-self:flex-start" aria-label="Hecho">${check(olv ? 'olvidar' : c, i.hecho, 22)}</button>
     <div class="body" data-act="editar" data-id="${i.id}"><div class="t">${tituloHTML(i)}</div>${i.hecho ? '' : meta(i, 'lista')}
       ${(i.fotos || []).length && !i.hecho ? `<div class="thumbs sm">${i.fotos.map(f => `<span class="thumb" style="background-image:url(${f.mini})"></span>`).join('')}</div>` : ''}</div></div>
     ${(i.items || []).length && !i.hecho ? `<div class="subs">${subHTML(i, false)}</div>` : ''}</div>`;
@@ -700,8 +741,8 @@ function flip(cont, antes) {
 // ---------- pasar de una categoría a otra, como tarjetas ----------
 let deslizando = false;
 async function irACat(nueva, desdeDx = 0, vel = 0) {
-  if (deslizando) return;
-  filaAbierta = null;
+  if (deslizando || SEL.on) return;
+  cerrarPop();
   const k0 = CATS.indexOf(S.cat), k1 = CATS.indexOf(nueva);
   if (k1 === k0 || k1 < 0) return;
   const dir = k1 > k0 ? 1 : -1;
@@ -742,32 +783,34 @@ function marcarHecho(id, btn) {
     const sig = proximaVez(i);
     setTimeout(() => {
       hacer(OP.cambiar(id, { aviso: sig, hecho: false, items: (i.items || []).map(x => Object.assign({}, x, { hecho: false })) }));
-      refrescarLista();
+      refrescarLista(); refrescarCosas();
       toast('Una menos. Vuelve ' + fechaCorta(sig, true).replace(/^(\D)/, m => m) + '.');
     }, 520);
     return;
   }
   const nuevo = !i.hecho;
   const ck = btn.querySelector('.ck');
+  const crow = btn.closest('.crow'); if (crow && nuevo) setTimeout(() => encoger(crow), 380);
   if (ck) { ck.classList.toggle('done', nuevo); ck.classList.remove('pop'); void ck.offsetWidth; ck.classList.add('pop'); }
   const task = btn.closest('.task'); if (task) task.classList.toggle('done', nuevo);   // el tachado se dibuja poco a poco
   vib();
   setTimeout(() => {
     hacer(OP.cambiar(id, i.items && i.items.length ? { hecho: nuevo, items: i.items.map(x => Object.assign({}, x, { hecho: nuevo })) } : { hecho: nuevo }));
-    refrescarLista();
+    refrescarLista(); refrescarCosas();
     if (nuevo) setTimeout(() => { const ch = paneActual() && paneActual().querySelector('.cheer'); if (ch) { ch.classList.add('on'); setTimeout(() => ch.classList.remove('on'), 2200); } }, 60);
   }, 520);
 }
+function refrescarCosas() { if ($('#sh-cosas').classList.contains('on')) pintarCajones(false); }
 function borrarFila(el, id) {
   encoger(el);
   setTimeout(() => {
-    hacer(OP.quitar(id)); refrescarLista();
+    hacer(OP.quitar(id)); refrescarLista(); refrescarCosas();
     toast('Borrado', 'Deshacer', () => deshacer('lista'));
   }, 300);
 }
 function soltarOlvidar(el, id) {   // de Olvidar a Hoy
   encoger(el);
-  setTimeout(() => { hacer(OP.cambiar(id, { cat: 'hoy' })); refrescarLista(); toast('Pasa a Hoy', 'Deshacer', () => deshacer('lista')); }, 300);
+  setTimeout(() => { hacer(OP.cambiar(id, { cat: 'hoy' })); refrescarLista(); refrescarCosas(); toast('Pasa a Hoy', 'Deshacer', () => deshacer('lista')); }, 300);
 }
 
 // ---------- Hoja de una idea (mover, carpeta, urgente, aviso) ----------
@@ -949,7 +992,7 @@ function pintarAjustes() {
     <div class="card">
       ${tg('revisar', !S.local.sinRevisar, 'Ver el resultado antes de guardar')}
       <div class="aj-note" style="padding:2px 16px 12px">${!S.local.sinRevisar ? 'Al tocar el ✓ ves el resultado. Si guardas antes de que Gemini acabe, lo ordena después por su cuenta.' : 'Al tocar el ✓ se guarda al momento y Gemini lo ordena por detrás. Te aviso cuando esté.'}</div>
-      <div class="arow"><span>Versión</span><span class="v">${NOMBRE_VARIANTE}</span></div>
+      <div class="arow"><span>Versión</span><span class="v">${VERSION} · ${NOMBRE_VARIANTE}</span></div>
       <div class="aj-note" style="padding:2px 16px 12px">${VARIANTE === 'audio' ? 'Solo se graba el audio y Gemini lo transcribe: sin sonido del micrófono, unos segundos más lenta.' : 'El dictado del iPhone escribe mientras hablas: más rápida, pero suena el micrófono de Apple al empezar y al acabar.'}</div>
       ${row('cuenta', 'Cuenta de Google', S.cfg ? 'conectada' : 'modo prueba')}
     </div>
@@ -1185,12 +1228,19 @@ async function procesarRapido(entrada) {
     }
     const b = S.borrador;
     // solo se sustituye si sigues en el resultado y no has tocado nada
-    if (n === afinadoN && b && b.provisional && !H.borrador.past.length && r.ideas && r.ideas.length) {
+    console.log('Posso · Gemini ha devuelto', r.ideas && r.ideas.length, 'ideas', r);
+    let cambiado = false;
+    if (n === afinadoN && b && !H.borrador.past.length && r.ideas && r.ideas.length) {
       S.borrador = { ideas: r.ideas.map(i => Object.assign({ frase: '', carpeta: '', aviso: '', urgente: false }, i)), transcripcion: r.transcripcion };
       $('#res-cards').classList.remove('provisional');
       if (actual && actual.id === 's-res') pintarResultado();
+      cambiado = true;
     }
-    if (n === afinadoN) marcaAfinando(H.borrador.past.length ? 'off' : 'ok');
+    if (n === afinadoN) {
+      if (cambiado) marcaAfinando('ok');
+      else if (!r.ideas || !r.ideas.length) marcaAfinando('error', 'Gemini no ha devuelto nada');
+      else marcaAfinando('off');      // habías cambiado algo a mano: se respeta lo tuyo
+    }
   } catch (e) {
     const relevo = RELEVO[n];
     if (relevo) {            // Gemini no ha respondido: se queda lo que guardaste
@@ -1226,7 +1276,7 @@ function marcaAfinando(estado, msg) {
     setTimeout(() => el.classList.remove('on'), 1600);
   } else if (estado === 'error') {
     el.className = 'afin on err';
-    el.innerHTML = `<span>Sin afinar${msg ? ' · ' + esc(/tardando|Load failed|fetch/i.test(msg) ? 'sin respuesta' : msg.slice(0, 40)) : ''}</span><button data-act="reintentar">Reintentar</button>`;
+    el.innerHTML = `<span>Sin afinar${msg ? ' · ' + esc(/tardando|Load failed|fetch/i.test(msg) ? 'Gemini no ha respondido a tiempo' : msg.slice(0, 90)) : ''}</span><button data-act="reintentar">Reintentar</button>`;
   } else el.classList.remove('on');
 }
 
@@ -1438,42 +1488,305 @@ function pintarFondo() {
 }
 
 // ---------- Ordenar sin Gemini (modo prueba) ----------
+/** Orden rápido en el propio iPhone (mientras Gemini afina, o si Gemini falla).
+ *  Probado con la batería de pruebas/casos.js: junta las aclaraciones con su idea, reconoce listas
+ *  (compra, «X: a, b y c», «(a, b y c)»), quita muletillas y correcciones, y entiende fechas,
+ *  repeticiones, «no corre prisa», «da igual»… */
 function ordenarAqui(texto) {
-  const trozos = texto.replace(/\b(y luego|y también|también|además|y después|y otra cosa)\b/gi, ',')
-    .split(/[,;.\n]+|\s+y\s+(?=(?:tengo|hay|el|la|los|las|mañana|pasado|algún|me|que|[a-záéíóú]+(?:ar|er|ir))\b)/i)
-    .map(s => s.trim()).filter(s => s.length > 3)
-    .reduce((acc, s) => {             // "eso es urgente" va con la idea de antes
-      if (/^(y\s+)?(eso\s+)?(es\s+)?(muy\s+)?urgente$|^(es\s+)?para\s+ya$/i.test(s) && acc.length) acc[acc.length - 1] += ', urgente';
-      else acc.push(s);
-      return acc;
-    }, []);
-  const hoy = new Date();
-  const diaSem = { lunes: 1, martes: 2, miércoles: 3, miercoles: 3, jueves: 4, viernes: 5, sábado: 6, sabado: 6, domingo: 0 };
-  return trozos.map(t => {
-    const l = t.toLowerCase();
-    let cat = 'hoy', aviso = '', urgente = /urgente|cuanto antes|corre prisa|ya mismo/.test(l);
-    const m = l.match(/\b(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b/);
-    const hora = l.match(/a las (\d{1,2})(?::(\d\d))?/);
-    const fijar = d => { d.setHours(hora ? +hora[1] : 9, hora && hora[2] ? +hora[2] : 0, 0, 0); aviso = isoLocal(d); };
-    if (/me preocupa|me molesta|me ralla|me raya|no depende de m[ií]|qu[eé] rabia|me fastidia|me agobia|lo que dijo/.test(l)) cat = 'olvidar';
-    else if (/alg[uú]n d[ií]a|me gustar[ií]a|alg[uú]n momento|cuando pueda|el a[nñ]o que viene|un d[ií]a de estos/.test(l)) cat = 'algun';
-    else if (m) { cat = 'semana'; const d = new Date(hoy); d.setDate(d.getDate() + ((diaSem[m[1]] - d.getDay() + 7) % 7 || 7)); fijar(d); }
-    else if (/pasado mañana/.test(l)) { cat = 'semana'; const d = new Date(hoy); d.setDate(d.getDate() + 2); fijar(d); }
-    else if (/\bmañana\b/.test(l)) { cat = 'semana'; const d = new Date(hoy); d.setDate(d.getDate() + 1); fijar(d); }
-    else if (/semana que viene|esta semana|pr[oó]xima semana/.test(l)) cat = 'semana';
-    if (urgente && cat !== 'olvidar' && !aviso) cat = 'hoy';
-    let carpeta = '';
-    const C = S.carpetas;
-    if (/instituto|clase|alumn|famil(ias)? de|evaluaci|examen|\dº|claustro|tutor/.test(l) && C.includes('Instituto')) carpeta = 'Instituto';
-    else if (/\bama\b|\baita\b|madre|padre|herman|cumplea|abuel|famil/.test(l) && C.includes('Familia')) carpeta = 'Familia';
-    else if (/casa|piso|compra|limpiar|papeles|lavadora|fontanero|factura/.test(l) && C.includes('Casa')) carpeta = 'Casa';
-    let titulo = t.replace(/^(y |que |pues |bueno |eh )+/i, '').replace(/^(tengo que|hay que|tendría que|debería|me gustaría|quiero)\s+/i, '')
-      .replace(/,?\s*(eso es|es) urgente/i, '').replace(/,?\s*(urgente|cuanto antes)$/i, '')
-      .replace(/^(el|este|el próximo)\s+(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\s+/i, '')
-      .replace(/^(pasado mañana|mañana|la semana que viene|esta semana|la próxima semana|algún día|algun dia)\s+/i, '')
-      .replace(/^(tengo que|hay que|quiero|me gustaría)\s+/i, '').trim();
-    return { titulo: cap(titulo), frase: t, cat, carpeta, urgente, aviso };
+  const DIA = '(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)';
+  const NUMS = { un: 1, una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12, quince: 15, veinte: 20, treinta: 30 };
+  const num = s => NUMS[s] || +s || 0;
+  const MULETILLA = /^(?:y\s+)?(?:vale|a ver|eh+|em+|mm+|uf+|buf+|ay|jo|bueno|pues|o sea|as[ií] que|entonces|por eso|ah|oye|mira|cosas|vamos|nada|venga|eso|y eso|recu[eé]rdame(?: de)?(?: que)?|av[ií]same(?: de)?(?: que)?|ap[uú]ntame(?: que)?|apunta(?: que)?(?=\s*[:,]|\s+que)|anota(?:me)?(?: que)?|la verdad(?: es)? que|y bueno|y nada|y ya est[aá]|ya est[aá]|nada m[aá]s|luego|despu[eé]s|tambi[eé]n|adem[aá]s)(?=$|[\s,.…:])[\s,.…:]*/i;
+  const limpiar = s => {
+    let a; s = String(s).trim();
+    do {
+      a = s;
+      s = s.replace(MULETILLA, '').replace(/^(?:y|e|o)\s+/i, '').replace(/^que\s+(?=tengo|tendr|hay|deber|necesito|quiero|mañana|pasado|hoy|el |este |alg[uú]n|me (?:gustar|encantar|apetecer|ralla|raya|agobia|preocupa|da rabia))/i, '').trim();
+    } while (s !== a);
+    return s;
+  };
+  const NUEVA = new RegExp('^(?:tengo que|tendr[ií]a que|hay que|deber[ií]a|necesito|quiero|me gustar[ií]a|me apetecer[ií]a|no (?:me )?(?:puedo )?olvid|acu[eé]rdate|recordar|mañana|pasado mañana|hoy|esta (?:tarde|noche|semana)|la semana que viene|el (?:fin de semana|finde|mes que viene)|(?:el |este |el pr[oó]ximo )?' + DIA +
+    '|antes del?|todos los|todas las|cada|de lunes|ll[eé]vale|tr[aá]eme|p[aá]sate|ac[uú]erdate|lo de|lo del|a primera hora|alg[uú]n d[ií]a|un d[ií]a de estos|[a-záéíóúñ]+(?:ar|er|ir)(?:le|les|la|lo|me|te|se)?(?=$|[\\s,.:]))', 'i');
+  const NO_VERBO = /^(?:azucar|collar|lugar|hogar|bar|mar|par|taller|alfiler|mujer|placer|ayer|deber|elixir|faquir|nadir|super|master|poster)(?=$|[\s,.:])|^[a-zñ]*[áéóú][a-záéíóúñ]*(?:ar|er|ir)(?=$|[\s,.:])/i;   // con tilde no es un infinitivo («máster», «súper»)
+  const esNueva = t => NUEVA.test(t) && !NO_VERBO.test(t);
+  const VERBO = /(?:^|\s)(?:tengo|hay|es|est[aá]|son|voy|vamos|comemos|cenamos|dijo|dice|entregaron|quedan?|tiene|tienen|ser[aá]|hago|caduca|gotea|falta|faltan)(?=$|[\s,.])/i;
+  const COMPRA = /^(?:(?:tengo que|hay que|necesito|tendr[ií]a que)\s+)?(?:hacer la compra|compra(?:r)?|apunta(?:r)? en la (?:lista de la )?compra|a(?:ñ|n)ad(?:e|ir) a la (?:lista de la )?compra|a la (?:lista de la )?compra|en la lista de la compra|(?:me|nos) falta(?:n)?|se (?:ha|han) acabado|queda poco de)\b[:\s]*/i;
+  const MODIF = /no (?:corre|me corre|hay) prisa|no es urgente|sin prisa|cuando pueda|lo dejo para alg[uú]n d[ií]a|para alg[uú]n d[ií]a|alg[uú]n d[ií]a|da igual|no pasa nada|me da lo mismo|tampoco pasa nada|no es importante|ya veremos|(?:eso )?(?:es )?(?:muy )?urgente|para ya|corre prisa|cuanto antes|s[ií] o s[ií]|la verdad|eso|que|si no lo hago|y|es|muy|no|me/gi;
+
+  const FECHA_INI = new RegExp('^(?:pasado mañana|mañana|hoy|esta tarde|esta noche|(?:el |este |el pr[oó]ximo )?' + DIA + ')(?: a primera hora| a las \\S+(?: y media| y cuarto| menos cuarto)?| por la (?:mañana|tarde|noche))?\\b', 'i');
+  // 0 · listas entre paréntesis o tras dos puntos se guardan aparte para que las comas no las rompan
+  const LISTAS = [];
+  const partir = s => s.split(/\s*,\s*|\s+y\s+|\s+e\s+(?=[ií])/).map(x => limpiar(x).replace(/^(?:(?:me|nos) falta(?:n)?|se (?:ha|han) acabado|queda(?:n)? poco de|(?:un )?poco de)\s+/i, '').replace(/^(?:unos?|unas?)\s+(?=\S+s\b)/i, '').replace(/^(?:el|la|los|las)\s+/i, '')).filter(x => x.length > 1).map(cap);
+  let tx = ' ' + texto.replace(/\s+/g, ' ') + ' ';
+  // correcciones al hablar: «el jueves, no, perdón, el viernes» → «el viernes»
+  // dudas: «mandar el… el… bueno, el documento» → «mandar el documento»
+  for (let k = 0; k < 3; k++) tx = tx.replace(/\b(el|la|los|las|un|una|de|del|a|al|que|en|con|para|y|mi|su)\s*…+\s*(?:\1\s*…+\s*)*(?:(?:bueno|eh|em|o sea|esto),?\s*)?(?:\1\s+)?/gi, '$1 ');
+  // correcciones: «el jueves, no, perdón, el viernes» · «a las seis, mejor dicho a las siete» · «Iker, digo, Unai»
+  tx = tx.replace(/([^.,;:¦]+?)\s*,\s*(?:no\s*,\s*(?:perd[oó]n\s*,?\s*)?|(?:no\s*,?\s*)?(?:perd[oó]n|mejor dicho|digo|quiero decir|no espera|bueno no)\s*,?\s+)([^.,;:]+)/gi, (m, x, y) => {
+    const yy = y.trim().replace(/^mejor\s+/i, ''), pal = yy.split(/\s+/), xw = x.trim().split(/\s+/);
+    if (esNueva(yy) && !/^(?:el|la|a)\s/i.test(yy)) return ' ' + yy;                       // «ir al súper, bueno no, mejor pedirlo online»
+    for (let n = Math.min(2, pal.length); n >= 1; n--) {                                       // se cambia desde la palabra que se repite
+      const clave = pal.slice(0, n).join(' ').toLowerCase();
+      for (let k = xw.length - n; k >= 0; k--) if (xw.slice(k, k + n).join(' ').toLowerCase() === clave) return ' ' + xw.slice(0, k).concat(pal).join(' ');
+    }
+    return ' ' + (xw.length > 1 ? xw.slice(0, -1).concat(pal) : pal).join(' ');               // «comprar tres, no, cuatro botellas»
   });
+  tx = tx.replace(/\(([^()]{3,})\)/g, (m, d) => /,|\sy\s/.test(d) ? ` __L${LISTAS.push(partir(d)) - 1}__ ` : m);
+  tx = tx.replace(/:\s*([^.;:!?]+)/g, (m, d) => {
+    const trozos = d.split(/\s*,\s*|\s+y\s+/).map(limpiar).filter(Boolean);
+    if (trozos.length < 2 || trozos.some(x => esNueva(x) && !/^el de |^la de /i.test(x))) return ' ;; ' + d;   // son tareas, no cosas
+    return ` __L${LISTAS.push(partir(d)) - 1}__ `;
+  });
+  // «del máster: leer…, subir…» → el máster es el tema; «hoy: a, b y c» → la fecha vale para todas
+  tx = tx.replace(/(^|[.;]\s*)([^.;]{1,30}?)\s*;; ([^.;]+)/g, (m, ini, pre, resto) => {
+    const p = limpiar(pre);
+    const partes = resto.split(/\s*,\s*|\s+y\s+(?=[a-záéíóúñ]+(?:ar|er|ir)(?:le|la|lo|me|se)?\s)/).filter(Boolean);
+    if (/^(?:del?|de la|de los|para (?:el|la)|en)\s/i.test(p)) return ini + ' lo ' + p.replace(/^(?:para|en)\s+/i, 'de ') + ', ' + partes.join(' ; ');
+    if (FECHA_INI.test(p) || /^(?:hoy|mañana|pasado mañana|esta semana)$/i.test(p)) return ini + partes.map(x => p + ' ' + x).join(' ; ');
+    return ini + (p ? p + ', ' : '') + partes.join(' ; ');
+  });
+  // «… y el lunes hay…», «… y subir…»: una idea nueva aunque vaya con «y»
+  tx = tx.replace(new RegExp('\\s+y\\s+(?=(?:el |este |mañana|pasado mañana|hoy |luego|despu[eé]s|tambi[eé]n|' + DIA + '|por la (?:mañana|tarde|noche)|ll[eé]vale|tr[aá]eme|p[aá]sate|[a-záéíóúñ]+(?:ar|er|ir)(?:le|les|la|las|lo|los|me|se)?\\s))', 'gi'), (m, k, s) => {
+    const sig = s.slice(k + m.length, k + m.length + 20), ant = s.slice(Math.max(0, k - 12), k);
+    if (new RegExp(DIA + 's?$', 'i').test(ant) && new RegExp('^(?:los )?' + DIA, 'i').test(sig)) return m;   // «los martes y jueves»
+    return NO_VERBO.test(sig) ? m : ' ;¦';
+  });
+
+  // 1 · trozos
+  const trozos = tx.split(/(?<=[.!?…])\s+|;;|[;\n]+|,\s*|…+|\.\s*(?=[A-ZÁÉÍÓÚÑ_])/)
+    .map(s => s.replace(/[.…]+$/, '').trim()).filter(Boolean);
+
+  const ideas = [];
+  let enCompra = null, fechaPend = '';
+  const ultima = () => ideas[ideas.length - 1];
+  const aplicarModif = (i, l) => {
+    if (/no (?:corre|me corre|hay) prisa|no es urgente|sin prisa|cuando pueda|alg[uú]n d[ií]a|me gustar[ií]a|me apetecer[ií]a|me apetece|me encantar[ií]a|un d[ií]a de estos|el (?:verano|a[nñ]o|invierno) que viene|en (?:verano|navidades|vacaciones)/.test(l)) { i.urgente = false; if (i.cat !== 'olvidar') { i.cat = 'algun'; if (!i.repetir && !i.limite) i.aviso = ''; } i.fijo = true; return true; }
+    if (/da igual|no pasa nada|me da lo mismo|tampoco pasa nada|no es importante|ya veremos|no depende de m[ií]|me (?:ralla|raya|agobia|preocupa|molesta|fastidia)|qu[eé] rabia|me da rabia|le doy vueltas|no s[eé] si |^qué |^que (?:d[ií]a|rollo|pereza|asco|agobio)\b/.test(l)) { i.cat = 'olvidar'; i.urgente = false; i.fijo = true; return true; }
+    if (/urgente|para ya|corre prisa|cuanto antes|s[ií] o s[ií]/.test(l) && !/no (?:es|corre|me corre) |sin prisa/.test(l)) { i.urgente = /urgente|para ya|corre prisa|cuanto antes/.test(l); if (i.cat !== 'olvidar' && !i.aviso) i.cat = 'hoy'; return true; }
+    return false;
+  };
+  const soloModif = l => l.replace(MODIF, ' ').replace(/[\s,.…]+/g, ' ').trim().split(' ').filter(w => w.length > 2).length <= 1;
+  const nuevaLista = (titulo, items, bruto) => {
+    const i = { titulo, frase: bruto, cat: 'hoy', carpeta: '', urgente: false, aviso: '', items: items.slice(), lista: true };
+    ideas.push(i); return i;
+  };
+
+  const TIENE_FECHA = new RegExp('\\b(?:mañana|hoy|esta tarde|esta noche|' + DIA + '|semana|d[ií]a \\d)', 'i');
+  let fechaFrase = '';
+  for (let bruto of trozos) {
+    const hereda = bruto.startsWith('¦'); bruto = bruto.replace(/^¦\s*/, '');
+    let t = limpiar(bruto);
+    if (fechaPend) { t = fechaPend + ' ' + t; fechaPend = ''; }
+    // «mañana comprar leche y llamar a mi padre»: la fecha del principio vale para las dos
+    if (hereda && fechaFrase && !TIENE_FECHA.test(t)) t = fechaFrase + ' ' + t;
+    else if (!hereda) { const fi = t.match(FECHA_INI); fechaFrase = fi ? fi[0] : ''; }
+    if (t.length < 2 || /^(?:necesito|tengo que|hay que|apunta|recuerda|y)$/i.test(t)) continue;
+    // un trozo que solo es una fecha («el viernes») va con lo siguiente
+    if (new RegExp('^(?:el |este |el pr[oó]ximo )?(?:' + DIA + '|mañana|pasado mañana|hoy|esta tarde|esta noche)(?: a las \\S+(?: y media| y cuarto| menos cuarto)?(?: de la \\S+)?| por la (?:mañana|tarde|noche))?$', 'i').test(t)) { fechaPend = t; continue; }
+    const l = t.toLowerCase();
+    const prev = ultima();
+    const lst = t.match(/__L(\d+)__/);
+    // a) lo que solo cambia la idea anterior («no corre prisa», «eso da igual», «es urgente»)
+    if (prev && !lst && soloModif(l) && aplicarModif(prev, l)) { enCompra = null; continue; }
+    if (prev && !lst && /^(?:si no lo hago|y si no)/i.test(t)) continue;
+    // b) listas: «X: a, b y c» o «X (a, b y c)»
+    if (lst) {
+      const items = LISTAS[+lst[1]];
+      let tit = limpiar(t.replace(/__L\d+__/, '').replace(/^(?:tengo que|hay que|necesito)\s+/i, '').trim());
+      if ((COMPRA.test(tit + ' ') || /lista de la compra/i.test(tit)) && !/material|para el cole|para la/i.test(tit)) { enCompra = ideas.find(i => i.lista && i.compra) || nuevaLista('Compra', [], bruto); enCompra.compra = true; items.forEach(x => enCompra.items.push(x)); enCompra.frase += ', ' + bruto; continue; }
+      if (/^(?:idea|nota|reflexi[oó]n|pensando|estaba pensando)\b/i.test(tit) || items.reduce((n, x) => n + x.split(' ').length, 0) / items.length > 5) {
+        ideas.push({ titulo: cap(tit.replace(/[:,]\s*$/, '')) || 'Nota', frase: bruto, cat: 'algun', carpeta: '', urgente: false, aviso: '', nota: items.join(', '), fijo: true });
+        enCompra = null; continue;
+      }
+      const i = nuevaLista(cap(tit.replace(/[:,]\s*$/, '')) || 'Lista', items, bruto);
+      Object.assign(i, fechaDe(l)); i.compra = /^compra/i.test(tit);
+      enCompra = null; continue;
+    }
+    // c) empieza la compra
+    const tc = t.replace(FECHA_INI, '').trim().replace(/^(?:a primera hora|por la (?:mañana|tarde|noche))\s+/i, '');
+    const sinModal = tc.replace(/^(?:tengo que|hay que|necesito|tendr[ií]a que)\s+/i, '');
+    if (COMPRA.test(tc)) {
+      const resto = limpiar(tc.replace(COMPRA, ''));
+      const unaCosa = (/^(?:un|una|el|la|los|las|unos|unas|algo|le|les|entradas|billetes?)\b/i.test(resto) || /\bregalo\b|\bpara (?:mi |tu |su |el |la |los |las )?[A-ZÁÉÍÓÚÑ]/.test(resto)) && !/,|\sy\s/.test(resto) && /^compra/i.test(sinModal);
+      if (!unaCosa) {
+        enCompra = ideas.find(i => i.compra) || Object.assign(nuevaLista('Compra', [], ''), { compra: true });
+        enCompra.frase += (enCompra.frase ? ', ' : '') + bruto;
+        partir(resto).forEach(x => enCompra.items.push(x));
+        continue;
+      }
+    }
+    // d) seguimos en la compra mientras parezcan cosas
+    if (enCompra && /^(?:que )?se (?:est[aá]|me est[aá]|nos est[aá]) acabando|se ha acabado|que no queda|que falta/i.test(l)) continue;
+    if (enCompra && /^que /i.test(t)) continue;
+    if (enCompra && !esNueva(t) && !VERBO.test(t) && t.split(' ').length <= 12) {
+      partir(t).forEach(x => enCompra.items.push(x));
+      enCompra.frase += ', ' + bruto;
+      continue;
+    }
+    enCompra = null;
+    // «hacerlo hoy», «eso para la semana que viene»: solo pone fecha a lo anterior
+    const soloFecha = new RegExp('^(?:para |de )?(?:la semana que viene|la pr[oó]xima semana|esta semana|pasado mañana|mañana|hoy|esta tarde|el (?:fin de semana|finde)|(?:el |este )?' + DIA + ')$', 'i').test(t);
+    if (prev && !prev.lista && (soloFecha || /^(?:hacerlo|hacerla|eso|esto|lo hago|lo tengo que hacer|tiene que ser)\b/i.test(t))) {
+      const d = fechaDe(l); Object.assign(prev, d); if (!d.cat && /\bhoy\b/.test(l)) prev.cat = 'hoy';
+      aplicarModif(prev, l); prev.frase += ', ' + bruto; continue;
+    }
+    const propia = /^(?:me|nos) (?:ralla|raya|agobia|preocupa|molesta|fastidia|da rabia)\b/i.test(t);
+    // e) aclaraciones: van con la idea de antes
+    const aclara = /^(?:el|la) de(?:l)? |^(?:el|la|los|las) que |^que |^para |^porque |^por si |^creo que|^igual |^a lo mejor|^con |^sin |^en casa de|^donde |^cuando |^si (?!no)|^me (?:las|los|lo|la) |^(?:se|le|les) |^bueno mejor |^mejor /i;
+    // «Pan. Leche. Huevos.»: varias cosas sueltas seguidas son la compra
+    const corta = x => x.split(' ').length <= 3 && !esNueva(x) && !VERBO.test(x) && !aclara.test(x) && !TIENE_FECHA.test(x) && !/__L/.test(x);
+    if (prev && !prev.lista && !prev.aviso && corta(prev.titulo) && corta(t) && prev.frase.split(/[ ,.]+/).filter(Boolean).length <= 3) {
+      ideas.pop(); enCompra = Object.assign(nuevaLista('Compra', [prev.titulo, cap(t)], prev.frase + ', ' + bruto), { compra: true }); continue;
+    }
+    if (prev && !prev.lista && !propia && (aclara.test(t) || (!esNueva(t) && !VERBO.test(t) && t.split(' ').length <= 3))) {
+      const d = new RegExp('\\b' + DIA + '\\b|mañana', 'i').test(l) && !prev.aviso && !prev.fijo ? fechaDe(l) : null;
+      if (d) { delete d.cat; Object.assign(prev, d); if (prev.cat === 'hoy' && prev.aviso) prev.cat = catDeAviso(prev.aviso); }
+      if (/^(?:igual|a lo mejor) /i.test(t) && /llevar|postre|regalo|\(/i.test(prev.titulo)) prev.titulo = prev.titulo.replace(/\)$/, '') + (prev.titulo.endsWith(')') ? ', ' : ' (') + t.replace(/^(?:igual|a lo mejor)\s+/i, '') + ')';
+      else if (/^(?:el|la) de(?:l)? /i.test(t) && /\b[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ]/.test(prev.titulo)) prev.titulo += ', ' + t;
+      else if (/^para /i.test(t)) prev.titulo += (/, (?:el|la) de/.test(prev.titulo) ? ', ' : ' ') + t.replace(/^para preguntarle/i, 'para preguntar');
+      aplicarModif(prev, l);
+      prev.frase += ', ' + bruto;
+      continue;
+    }
+    // f) «tengo que llevar el postre» justo después de una comida, cena o cumple: va dentro
+    if (prev && !prev.lista && /^(?:tengo que |hay que )?(?:llevar|ll[eé]vale|llevarle|comprarle|regalarle) /i.test(t) && /\b(?:com(?:er|emos|ida)|cen(?:ar|amos|a)|casa de|cumple|fiesta|quedada)/i.test(prev.titulo + ' ' + prev.frase)) {
+      prev.titulo = prev.titulo.replace(/\)$/, '') + (prev.titulo.endsWith(')') ? ', ' : ' (') + t.replace(/^(?:tengo que |hay que )/i, '').replace(/^\w/, c => c.toLowerCase()) + ')';
+      prev.frase += ', ' + bruto; continue;
+    }
+    // «el coche hace un ruido raro, llevarlo al taller»: la frase de antes dice qué es «lo»
+    if (prev && !prev.lista && !prev.aviso && !prev.fijo && !esNueva(limpiar(prev.frase)) && /^(?:el|la|los|las|mi|mis)\s/i.test(prev.titulo)) {
+      const cl2 = t.match(/^([a-záéíóúñ]+?(?:ar|er|ir))(lo|la|los|las)\b(.*)$/i);
+      const suj = prev.titulo.match(/^((?:el|la|los|las|mi|mis)\s+\S+)\s+(.*)$/i);
+      if (cl2 && suj) {
+        ideas.pop();
+        t = cl2[1] + ' ' + suj[1].replace(/^\w/, c => c.toLowerCase()) + cl2[3] + ' (' + suj[2] + ')';
+        bruto = prev.frase + ', ' + bruto;
+      }
+    }
+    // «lo de la boda de mi prima, buscar un traje»: lo de antes era solo el tema
+    let tema = '';
+    if (prev && prev.tema && !prev.lista && ideas.length && esNueva(t)) { tema = prev.titulo; ideas.pop(); }
+    // g) una idea nueva
+    const i = Object.assign({ titulo: '', frase: bruto, cat: 'hoy', carpeta: '', urgente: false, aviso: '' }, fechaDe(l));
+    aplicarModif(i, l);
+    let tit = t
+      .replace(/,?\s*(?:lo dejo para|para) alg[uú]n d[ií]a.*$/i, '').replace(/,?\s+(?:cuando pueda|el (?:verano|a[nñ]o|invierno) que viene)\b/i, '').replace(/,?\s*(?:no corre prisa|(?:eso )?(?:me )?da igual|s[ií] o s[ií]).*$/i, '')
+      .replace(/,?\s*(?:eso es|es) urgente.*$/i, '').replace(/,?\s*(?:urgente|cuanto antes)$/i, '')
+      .replace(/\s+pero bueno.*$/i, '').replace(/\s+antes de que se agoten$/i, '').replace(/,?\s+que si no\b.*$/i, '').replace(/^(?:dentro de \S+ (?:d[ií]as|semanas|meses)|(?:el )?\d{1,2} de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre))\s+/i, '');
+    let a;
+    do {
+      a = tit;
+      tit = tit.replace(/^(?:de que|sin falta|a mediod[ií]a|el (?:finde|fin de semana)|es|hay(?! que)|tengo(?! que)|(?:tengo que )?acordarme de|me apetece(?: un mont[oó]n| mucho)?|me encantar[ií]a|me da rabia que|no s[eé] si|se me (?:ha )?olvid(?:ado|ó)|que no se me olvide|no se me puede olvidar|tengo que|tendr[ií]a que|hay que|deber[ií]a|necesito|quiero|me gustar[ií]a|me apetecer[ií]a|no (?:me )?(?:puedo )?olvidar(?:me)? de|acu[eé]rdate de|recordar)\s+/i, '')
+        .replace(/^(?:alg[uú]n d[ií]a|un d[ií]a de estos)\s+/i, '')
+        .replace(/^(?:todas las (?:mañanas|noches|tardes)|cada (?:mañana|noche|tarde)|todos los d[ií]as|cada d[ií]a|de lunes a viernes|entre semana|cada (?:\S+ )?(?:d[ií]as|semanas?|mes(?:es)?)|todas las semanas|todos los meses)\s+/i, '')
+        .replace(new RegExp('^el (?:primer|segundo|tercer|cuarto|[uú]ltimo) ' + DIA + ' de cada mes\\s+', 'i'), '')
+        .replace(/^(?:el )?d[ií]a \d{1,2} de cada mes\s+/i, '').replace(/^(?:el )?(?:d[ií]a )?\d{1,2}\s+(?:es\s+)?(?!de\s)/i, '')
+        .replace(new RegExp('^(?:el |este |el pr[oó]ximo |antes del? |todos los |los |cada )?' + DIA + 's?(?:,? y (?:los )?' + DIA + 's?)?(?: \\d{1,2}(?! de))?\\s+', 'i'), '')
+        .replace(/^(?:a (?:primera|segunda|tercera|cuarta|quinta|sexta|[uú]ltima) hora|por la (?:mañana|tarde|noche)|pasado mañana|mañana|hoy|esta (?:tarde|noche|semana)|la semana que viene|la pr[oó]xima semana)\s+/i, '')
+        .replace(/^a las \S+(?: y media| y cuarto| menos cuarto)?(?: de la (?:mañana|tarde|noche))?\s+/i, '')
+        .replace(i.cat === 'olvidar' ? /^$/ : /^lo de(?:l)?\s+/i, '').replace(/^(?:me )?(?:ralla|raya|agobia|preocupa)\s+(?:un mont[oó]n\s+|mucho\s+|bastante\s+|un poco\s+)?/i, '').trim();
+    } while (tit !== a);
+    // la fecha ya va aparte: fuera del final del título
+    do {
+      a = tit;
+      tit = tit.replace(new RegExp('(?<!\\bdel?)\\s+(?:para |antes |hasta )?(?:el |este |el pr[oó]ximo |los )?' + DIA + 's?$', 'i'), '')
+        .replace(/\s+a (?:primera|segunda|tercera|cuarta|quinta|sexta|[uú]ltima) hora$/i, '').replace(/\s+(?:todos los d[ií]as|cada d[ií]a|todas las semanas|cada semana)$/i, '')
+        .replace(/\s+(?:antes|para|hasta) del? (?:d[ií]a )?\d{1,2}$/i, '')
+        .replace(/\s+(?:para |antes |hasta )?(?:el |del )d[ií]a \d{1,2}$/i, '').replace(/\s+(?:para|antes de|hasta) (?:la semana que viene|mañana|el finde|el fin de semana)$/i, '')
+        .replace(/\s+a las \S+(?: y media| y cuarto| menos cuarto)?(?: de la (?:mañana|tarde|noche))?$/i, '')
+        .replace(/\s+(?:pasado mañana|mañana|hoy|esta tarde|esta noche|sin falta|por la (?:mañana|tarde|noche))$/i, '');
+    } while (tit !== a && tit.split(' ').length > 2);
+    tit = tit.replace(/(\S)\s+(?:pasado mañana|mañana)(?=\s)(?<!(?:de|por) la mañana)/i, '$1');   // «llamar mañana a…»
+    const IMPER = { 'pásate': 'Pasarme', 'llévale': 'Llevarle', 'tráeme': 'Traerme', 'acuérdate': 'Acordarme', llama: 'Llamar', compra: 'Comprar', escribe: 'Escribir', manda: 'Mandar', pide: 'Pedir', recoge: 'Recoger', lleva: 'Llevar', busca: 'Buscar', haz: 'Hacer', pon: 'Poner', reserva: 'Reservar', paga: 'Pagar' };
+    tit = tit.replace(/^(\S+)/, w => IMPER[w.toLowerCase()] || w).replace(/^(\S+?)\s+y\s+ll[eé]vale\b/i, '$1 y llevarle');
+    tit = tit.replace(/\s+lo dejo$/i, '').replace(/^comemos\b/i, 'Comer').replace(/^cenamos\b/i, 'Cenar').replace(/^quedamos\b/i, 'Quedar')
+      .replace(/\s+(?:hoy )?por la (?:tarde|mañana|noche)$/i, '').replace(/\s+(?:hoy|esta tarde|esta noche)$/i, '');
+    const cl = tema && tit.match(/^(\S+?(?:ar|er|ir))(la|lo|las|los)\b(.*)$/i);
+    i.titulo = cl ? cap(cl[1] + ' ' + tema.replace(/^\w/, c => c.toLowerCase()) + cl[3]) : cap(tit) + (tema ? ' (' + tema.replace(/^\w/, c => c.toLowerCase()) + ')' : '');
+    if (/^lo del? /i.test(t) && !esNueva(t.replace(/^lo del?\s+/i, '')) && !i.fijo) i.tema = true;
+    if (i.limite) i.titulo = i.titulo.replace(/,?\s*que me (?:las|los|lo|la) entregaron.*$/i, '');
+    ideas.push(i);
+  }
+
+  // 2 · carpeta y repaso final
+  const C = S.carpetas;
+  return ideas.filter(i => i.titulo && !/^(?:nada|eso|cosas|mira|vale|bueno|ya est[aá]|y ya|los|las|el|la)$/i.test(i.titulo) && (!i.lista || i.items.length)).map(i => {
+    const l = (i.titulo + ' ' + i.frase + ' ' + (i.items || []).join(' ')).toLowerCase();
+    let carpeta = '';
+    if (/instituto|\bclases?\b(?! de)|alumn|familias de|evaluaci|examen(?! de conducir)|ex[aá]menes|pr[aá]cticas|\d\s?º\s?[a-e]\b|claustro|tutor|m[aá]ster|idoceo|coordinador|excursi|jefe de estudios|notas de|\binsti\b|jefatura|programaci[oó]n|aula de|departamento|r[uú]bricas|recuperaci[oó]n|tercera hora|primera evaluaci|tutor[ií]a/.test(l) && C.includes('Instituto')) carpeta = 'Instituto';
+    else if (/\bama\b|\baita\b|\babuel[oa]s?\b|\bmis? (?:madre|padre|padres|herman|abuel|prim|t[ií][oa]|sobrin|suegr|cuñad|hij|niet)|familia\b|boda|bautizo|nochebuena|navidad en casa/.test(l) && C.includes('Familia')) carpeta = 'Familia';
+    else if (i.compra || /\bcasa\b|piso|limpiar|papeles|lavadora|lavavajillas|nevera|fontanero|electricista|factura|alquiler|casero|grifo|caldera|calefacci|humedad|\bba[ñn]o\b|\b(?:la|de la) cocina\b|\bpintar\b|plantas|\bregar\b|comunidad|basura|reciclaj|taller|coche|peces|acuario|trastero|mudanza/.test(l)) carpeta = C.includes('Casa') ? 'Casa' : '';
+    if (i.lista) return Object.assign({ titulo: i.titulo, frase: i.frase, cat: i.cat, tipo: 'lista', clave: i.titulo, carpeta, urgente: i.urgente, aviso: i.aviso || '',
+      items: i.items.map(t => ({ id: uid(), t: cap(String(t)), hecho: false })) }, i.repetir ? { repetir: i.repetir } : {});
+    const o = { titulo: i.titulo, frase: i.frase, cat: i.cat, carpeta, urgente: i.urgente, aviso: i.aviso };
+    if (i.limite) o.limite = i.limite;
+    if (i.repetir) o.repetir = i.repetir;
+    if (i.nota) { o.tipo = 'nota'; o.nota = i.nota; }
+    return o;
+  });
+
+  function catDeAviso(av) { const d = deIsoSimple(av), h = new Date(); h.setHours(23, 59, 59, 0); return d <= h ? 'hoy' : 'semana'; }
+  function deIsoSimple(s) { return new Date(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10), +s.slice(11, 13) || 0, +s.slice(14, 16) || 0); }
+
+  /** fecha, hora y repetición de una frase */
+  function fechaDe(l) {
+    const r = {};
+    const hm = l.match(/a las (\d{1,2}|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)(?::(\d\d))?( y media| y cuarto| menos cuarto)?( de la (?:mañana|tarde|noche))?/);
+    let h = hm ? num(hm[1]) : 9, mi = hm ? (hm[2] ? +hm[2] : hm[3] === ' y media' ? 30 : hm[3] === ' y cuarto' ? 15 : hm[3] === ' menos cuarto' ? 45 : 0) : 0;
+    if (hm && hm[3] === ' menos cuarto') h -= 1;
+    if (hm && hm[4]) { if (/tarde|noche/.test(hm[4]) && h < 12) h += 12; }
+    else if (hm && /esta (?:tarde|noche)|por la (?:tarde|noche)/.test(l) && h < 12) h += 12;
+    else if (hm && h < 8) h += 12;
+    if (/mediod[ií]a/.test(l) && !hm) h = 14;
+    if (/a primera hora/.test(l) && !hm) h = 8;
+    if (/por la tarde|esta tarde/.test(l) && !hm) h = 17;
+    const hora = pad(h) + ':' + pad(mi);
+    const ds = { lunes: 1, martes: 2, 'miércoles': 3, miercoles: 3, jueves: 4, viernes: 5, 'sábado': 6, sabado: 6, domingo: 7 };
+    const hoy = new Date();
+    const en = n => { const d = new Date(hoy); d.setDate(d.getDate() + n); d.setHours(h, mi, 0, 0); return d; };
+    const proximo = n => en((((n % 7) - hoy.getDay() + 7) % 7) || 7);
+    const repetir = rr => { rr.hora = hora; r.repetir = rr; r.aviso = siguienteRepeticion(rr, isoLocal(hoy), true); r.cat = catDeAviso(r.aviso); r.fijo = true; return r; };
+    // repeticiones
+    let m;
+    if ((m = l.match(new RegExp('el (primer|segundo|tercer|cuarto|[uú]ltimo) (' + DIA + ') de cada mes', 'i'))))
+      return repetir({ tipo: 'mensualOrdinal', ordinal: { primer: 1, segundo: 2, tercer: 3, cuarto: 4 }[m[1]] || -1, diaSemana: ds[m[2]] });
+    if ((m = l.match(/(?:el )?d[ií]a (\d{1,2}) de cada mes|todos los (?:d[ií]as )?(\d{1,2}) de cada mes|cada d[ií]a (\d{1,2}) del mes/)))
+      return repetir({ tipo: 'mensualDia', dia: +(m[1] || m[2] || m[3]) });
+    if (/de lunes a viernes|entre semana|d[ií]as laborables|todos los d[ií]as laborables/.test(l)) return repetir({ tipo: 'laborables' });
+    if ((m = l.match(/cada (\S+) (d[ií]as|semanas)/)) && num(m[1])) return repetir({ tipo: 'cadaN', n: num(m[1]) * (/semana/.test(m[2]) ? 7 : 1) });
+    if (/cada quince d[ií]as|cada dos semanas/.test(l)) return repetir({ tipo: 'cadaN', n: 14 });
+    if ((m = l.match(new RegExp('(?:todos los|cada|los) (' + DIA + ')s?(?:,? y (?:los )?(' + DIA + ')s?)?', 'i'))) && (/todos los|cada/.test(m[0]) || /^los /.test(m[0])) && !/^los (?:s[aá]bado|domingo)$/.test(m[0]) || (m && m[2]))
+      return repetir({ tipo: 'semanal', dias: [ds[m[1]]].concat(m[2] ? [ds[m[2]]] : []) });
+    if (/todos los d[ií]as|cada d[ií]a|cada noche|todas las noches|todas las mañanas/.test(l)) return repetir({ tipo: 'diaria' });
+    if (/todas las semanas|cada semana/.test(l)) return repetir({ tipo: 'semanal', dias: [((hoy.getDay() + 6) % 7) + 1] });
+    if (/todos los meses|cada mes/.test(l)) return repetir({ tipo: 'mensualDia', dia: hoy.getDate() });
+    // fechas
+    const dn = l.match(new RegExp('(?:' + DIA + ') (\\d{1,2})\\b(?! de)|^(?:el )?(?:d[ií]a )?(\\d{1,2})\\b(?! de| horas| d[ií]as| minutos)', 'i'));
+    if (dn && +(dn[1] || dn[2]) <= 31 && +(dn[1] || dn[2]) >= 1) { const d = en(0); d.setDate(+(dn[1] || dn[2])); if (d < hoy && d.getDate() !== hoy.getDate()) d.setMonth(d.getMonth() + 1); r.aviso = isoLocal(d); const dd = (d - hoy) / 864e5; r.cat = d.getDate() === hoy.getDate() && dd < 1 ? 'hoy' : dd <= 10 ? 'semana' : 'algun'; return r; }
+    const MES = { enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5, julio: 6, agosto: 7, septiembre: 8, octubre: 9, noviembre: 10, diciembre: 11 };
+    const dentro = l.match(/dentro de (\S+) (d[ií]as|semanas|meses)/);
+    if (dentro && num(dentro[1])) { const n = num(dentro[1]) * (/semana/.test(dentro[2]) ? 7 : /mes/.test(dentro[2]) ? 30 : 1); r.aviso = isoLocal(en(n)); r.cat = n <= 10 ? 'semana' : 'algun'; return r; }
+    const fm = l.match(/(?:el )?(\d{1,2}) de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/);
+    if (fm) {
+      const d = new Date(hoy.getFullYear(), MES[fm[2]], +fm[1], h, mi); if (d < hoy) d.setFullYear(d.getFullYear() + 1);
+      if (/antes del?|para el|hasta el/.test(l)) r.limite = isoDia(d); else r.aviso = isoLocal(d);
+      if (r.limite) { const av = new Date(d); av.setDate(av.getDate() - 2); av.setHours(9, 0, 0, 0); r.aviso = isoLocal(av < hoy ? en(1) : av); }
+      const dd = (d - hoy) / 864e5; r.cat = dd < 1 && d.getDate() === hoy.getDate() ? 'hoy' : dd <= 10 ? 'semana' : 'algun'; return r;
+    }
+    const antesN = l.match(/(?:antes del?|hasta el|para el) (?:d[ií]a )?(\d{1,2})\b(?! de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre))/);
+    if (antesN) { const d = new Date(hoy); d.setDate(+antesN[1]); if (d < hoy) d.setMonth(d.getMonth() + 1); r.limite = isoDia(d); const av = new Date(d); av.setDate(av.getDate() - 2); if (av < hoy) av.setTime(en(1).getTime()); av.setHours(9, 0, 0, 0); r.aviso = isoLocal(av); r.cat = (d - hoy) / 864e5 <= 7 ? 'semana' : 'algun'; return r; }
+    const antes = l.match(new RegExp('antes del? (' + DIA + ')', 'i'));
+    if (antes) { const d = proximo(ds[antes[1]]); r.limite = isoDia(d); const av = new Date(d); av.setDate(av.getDate() - 2); if (av < hoy) av.setTime(en(1).getTime()); av.setHours(9, 0, 0, 0); r.aviso = isoLocal(av); r.cat = 'semana'; return r; }
+    m = l.match(new RegExp('\\b(' + DIA + ')\\b', 'i'));
+    if (/pasado mañana/.test(l)) { r.aviso = isoLocal(en(2)); r.cat = 'semana'; }
+    else if (/\bmañana\b/.test(l.replace(/(?:por|de) la mañana|todas las mañanas|cada mañana/g, ''))) { r.aviso = isoLocal(en(1)); r.cat = 'semana'; }
+    else if (m) { r.aviso = isoLocal(proximo(ds[m[1]])); r.cat = 'semana'; }
+    else if (/\bhoy\b|esta tarde|esta noche|por la tarde|mediod[ií]a/.test(l)) { if (hm || /tarde|mediod/.test(l)) r.aviso = isoLocal(en(0)); r.cat = 'hoy'; }
+    else if (/semana que viene|esta semana|pr[oó]xima semana|el finde|el fin de semana/.test(l)) r.cat = 'semana';
+    else if (/alg[uú]n d[ií]a|me gustar[ií]a|me apetecer[ií]a|alg[uú]n momento|un d[ií]a de estos|el a[nñ]o que viene/.test(l)) r.cat = 'algun';
+    else if (hm) { const d = en(0); if (d < hoy) d.setDate(d.getDate() + 1); r.aviso = isoLocal(d); r.cat = catDeAviso(r.aviso); }
+    return r;
+  }
 }
 
 // =====================================================================
@@ -1647,8 +1960,36 @@ const ACT = {
     b.ideas.forEach(i => { if (i.carpetaNueva === c) { i.carpeta = c; delete i.carpetaNueva; } });
     vib(); pintarResultado(); toast('Carpeta «' + c + '» creada.');
   },
-  'fila-borrar': el => { const task = el.closest('.task'); filaAbierta = null; vib(); borrarFila(task, el.dataset.id); },
-  'fila-hoy': el => { const task = el.closest('.task'); filaAbierta = null; vib(); soltarOlvidar(task, el.dataset.id); },
+  vista: el => { S.local.vistaCosas = el.dataset.v; persist(); salirSel(); vib(); pintarCajones(true); $('#drawers').scrollTop = 0; },
+  'pop-cerrar': () => cerrarPop(),
+  'pop-editar': () => { const id = POP.id; cerrarPop(); abrirIdea({ tipo: 'guardada', id }); },
+  'pop-borrar': () => { const { id, fila } = POP; cerrarPop(); vib(); borrarFila(fila, id); },
+  'pop-hoy': () => { const { id, fila } = POP; cerrarPop(); vib(); soltarOlvidar(fila, id); },
+  'pop-sel': () => { const { id, fila } = POP; cerrarPop(); entrarSel(fila.closest('#sh-cosas') ? 'cosas' : 'lista', id); },
+  'pop-mover': () => { const { id } = POP; cerrarPop(); menuMover([id]); },
+  'mover-a': el => moverA(el.dataset.k, el.dataset.v),
+  'sel-on': el => entrarSel(el.closest('#sh-cosas') ? 'cosas' : 'lista'),
+  'sel-off': () => salirSel(),
+  'sel-todo': () => {
+    const filas = filasSel(), todas = filas.length && filas.every(f => SEL.ids.has(f.dataset.id));
+    filas.forEach(f => todas ? SEL.ids.delete(f.dataset.id) : SEL.ids.add(f.dataset.id));
+    vib(); marcarSel();
+  },
+  'sel-borrar': () => {
+    const ids = [...SEL.ids]; if (!ids.length) return;
+    filasSel().filter(f => SEL.ids.has(f.dataset.id)).forEach(encoger);
+    vib();
+    setTimeout(() => { lote(ids.map(id => OP.quitar(id))); salirSel(); toast(ids.length === 1 ? 'Borrada' : `${ids.length} borradas`, 'Deshacer', () => deshacer('lista')); }, 300);
+  },
+  'sel-hecho': () => {
+    const ids = [...SEL.ids].filter(id => { const i = buscar(id); return i && i.cat !== 'olvidar'; }); if (!ids.length) return toast('Lo de Olvidar no se hace: se borra o se pasa a Hoy.');
+    vib();
+    lote(ids.map(id => { const i = buscar(id);
+      if (i.repetir) return OP.cambiar(id, { aviso: proximaVez(i), hecho: false, items: (i.items || []).map(x => Object.assign({}, x, { hecho: false })) });
+      return OP.cambiar(id, i.items && i.items.length ? { hecho: true, items: i.items.map(x => Object.assign({}, x, { hecho: true })) } : { hecho: true }); }));
+    salirSel(); toast(ids.length === 1 ? 'Hecha' : `${ids.length} hechas`, 'Deshacer', () => deshacer('lista'));
+  },
+  'sel-mover': () => { if (SEL.ids.size) menuMover([...SEL.ids]); },
   revisar: el => conSw(el, () => { S.local.sinRevisar = !S.local.sinRevisar; persist(); pintarAjustes(); }),
   foto: () => $('#foto-tareas').click(),
   grupo: el => { S.grupo = el.dataset.v; vib(); const p = paneActual(); if (p) { p.innerHTML = paneHTML(S.cat); p.querySelectorAll('[data-gem]').forEach(pintarGema); const it = p.querySelector('.items'); if (it && !reduceMotion()) { [...it.children].forEach((e, k) => e.style.setProperty('--i', Math.min(k, 8))); it.classList.add('enter'); } } },
@@ -1723,7 +2064,15 @@ const ACT = {
 
 document.addEventListener('click', e => {
   if (arrastrando) return;      // el clic que llega justo al soltar una pulsación larga o un arrastre no cuenta
-  if (filaAbierta && !e.target.closest('.task.abierta .under')) { cerrarFila(); e.preventDefault(); return; }
+  if (SEL.on && !e.target.closest('#selbar,#pop,#pop-scrim,.sel-btn,#vista-tg')) {
+    const f = e.target.closest('[data-sel]');
+    if (f && f.closest(SEL.donde === 'cosas' ? '#sh-cosas' : '#s-list')) {
+      e.preventDefault();
+      SEL.ids.has(f.dataset.id) ? SEL.ids.delete(f.dataset.id) : SEL.ids.add(f.dataset.id);
+      vib(); marcarSel();
+    }
+    if (!e.target.closest('.atras,[data-act="atras"],[data-act="cerrar-cosas"]')) return;
+  }
   const el = e.target.closest('[data-act]');
   if (!el || el.closest('[disabled]') || arrastrando) return;
   if (el.tagName === 'A') return;
@@ -1735,32 +2084,117 @@ $('#writebox').addEventListener('input', contarIdeas);
 document.addEventListener('pointerdown', e => { const g = e.target.closest('.gem.tap'); if (g) g.classList.add('press'); });
 ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => document.addEventListener(t, () => $$('.gem.press').forEach(g => g.classList.remove('press'))));
 
-// ---------- mantener pulsada una tarea: aparecen Borrar (y en Olvidar, A Hoy) ----------
-let filaAbierta = null;
-function abrirFila(task) {
-  cerrarFila();
-  filaAbierta = task; task.classList.add('abierta');
-  const ancho = task.querySelectorAll('.under .act').length * 92;
-  const f = task.querySelector('.front'); f.style.transition = 'transform .32s cubic-bezier(.3,1.2,.5,1)'; f.style.transform = `translateX(-${ancho}px)`;
+// ---------- mantener pulsada una tarea: sale un menú al lado ----------
+function abrirPop(fila) {
+  const id = fila.dataset.id, i = buscar(id); if (!i) return;
+  cerrarPop();
+  POP.id = id; POP.fila = fila;
+  const olv = i.cat === 'olvidar';
+  const pop = $('#pop');
+  pop.innerHTML = `
+    <button data-act="pop-editar">Abrir${ICO3.abrir}</button>
+    <button data-act="pop-sel">Seleccionar varias${ICO3.sel}</button>
+    <button data-act="pop-mover">Mover a…${ICO3.mover}</button>
+    ${olv ? `<button data-act="pop-hoy">Pasar a Hoy${ICO3.hoy}</button>` : ''}
+    <button data-act="pop-borrar" class="del">Borrar${ICO3.borrar}</button>`;
+  colocarPop(fila);
+  fila.classList.add('levantada');
+  $('#pop-scrim').classList.add('on');
   vib();
 }
-function cerrarFila() {
-  if (!filaAbierta) return;
-  const t = filaAbierta, f = t.querySelector('.front'); filaAbierta = null;
-  if (f) { f.style.transition = 'transform .28s cubic-bezier(.2,.8,.2,1)'; f.style.transform = ''; }
-  setTimeout(() => t.classList.remove('abierta'), 280);
+/** El menú sale debajo de la tarea, alineado a la derecha; si no cabe, encima */
+function colocarPop(ancla) {
+  const pop = $('#pop'), app = $('#app').getBoundingClientRect(), r = ancla.getBoundingClientRect();
+  pop.style.visibility = 'hidden'; pop.classList.add('on');
+  const h = pop.offsetHeight, w = pop.offsetWidth;
+  let top = r.bottom - app.top + 6, origen = 'top';
+  if (top + h > app.height - 24) { top = r.top - app.top - h - 6; origen = 'bottom'; }
+  top = Math.max(12, top);
+  const left = Math.max(12, Math.min(app.width - w - 12, r.right - app.left - w - 10));
+  Object.assign(pop.style, { top: top + 'px', left: left + 'px', transformOrigin: `${origen} right`, visibility: '' });
 }
+function cerrarPop() {
+  $('#pop').classList.remove('on'); $('#pop-scrim').classList.remove('on');
+  $$('.levantada').forEach(f => f.classList.remove('levantada'));
+  POP.id = null; POP.fila = null;
+}
+function menuMover(ids) {
+  const i0 = ids.length === 1 ? buscar(ids[0]) : null;
+  const pop = $('#pop');
+  pop.innerHTML = `<div class="pop-t">Cuándo</div>` +
+    CATS.map(c => `<button data-act="mover-a" data-k="cat" data-v="${c}" class="${i0 && i0.cat === c ? 'on' : ''}"><span class="pdot" style="background:var(--v-${c})"></span>${NOMBRE[c]}</button>`).join('') +
+    `<div class="pop-t">Carpeta</div>` +
+    S.carpetas.map(n => `<button data-act="mover-a" data-k="carpeta" data-v="${esc(n)}" class="${i0 && i0.carpeta === n ? 'on' : ''}">${esc(n)}</button>`).join('') +
+    `<button data-act="mover-a" data-k="carpeta" data-v="" class="${i0 && !i0.carpeta ? 'on' : ''}">Sin carpeta</button>`;
+  pop.dataset.ids = ids.join(',');
+  const ancla = SEL.on ? $('#selbar') : (document.querySelector(`[data-sel][data-id="${ids[0]}"]`) || $('#selbar'));
+  if (ancla.id === 'selbar') {
+    pop.style.visibility = 'hidden'; pop.classList.add('on');
+    const app = $('#app').getBoundingClientRect();
+    Object.assign(pop.style, { left: (app.width - pop.offsetWidth - 16) + 'px', top: Math.max(12, ancla.getBoundingClientRect().top - app.top - pop.offsetHeight - 8) + 'px', transformOrigin: 'bottom right', visibility: '' });
+  } else colocarPop(ancla);
+  $('#pop-scrim').classList.add('on'); vib();
+}
+function moverA(campo, valor) {
+  const ids = ($('#pop').dataset.ids || '').split(',').filter(id => buscar(id));
+  cerrarPop(); if (!ids.length) return;
+  const ops = ids.filter(id => (buscar(id)[campo] || '') !== valor).map(id => OP.cambiar(id, { [campo]: valor }));
+  if (ops.length) lote(ops);
+  if (SEL.on) salirSel();
+  vib();
+  toast(`${ids.length === 1 ? 'Movida' : ids.length + ' movidas'} a ${campo === 'cat' ? NOMBRE[valor] : valor || 'Sin carpeta'}`, ops.length ? 'Deshacer' : '', () => deshacer('lista'));
+}
+/** Varias operaciones como una sola: se deshacen de golpe */
+function lote(ops) {
+  hacer({ do: () => ops.forEach(o => o.do()), undo: () => ops.slice().reverse().forEach(o => o.undo()) });
+  refrescarLista(); refrescarCosas();
+}
+
+// ---------- Editar: elegir varias a la vez ----------
+const filasSel = () => $$(SEL.donde === 'cosas' ? '#drawers [data-sel]' : '#s-list .pane [data-sel]').filter(f => !f.classList.contains('done') && !f.classList.contains('collapse'));
+function entrarSel(donde, id) {
+  if (donde === 'cosas' && S.local.vistaCosas !== 'carpetas') { S.local.vistaCosas = 'carpetas'; persist(); }
+  SEL.on = true; SEL.donde = donde; SEL.ids = new Set(id ? [id] : []);
+  document.body.classList.add('seleccionando');
+  $('#app').dataset.sel = donde;
+  vib();
+  if (donde === 'cosas') pintarCajones(false); else { const p = paneActual(); if (p) { p.innerHTML = paneHTML(S.cat); p.querySelectorAll('[data-gem]').forEach(pintarGema); } }
+  marcarSel();
+  $('#selbar').classList.add('on');
+}
+function salirSel() {
+  if (!SEL.on) return;
+  const donde = SEL.donde;
+  SEL.on = false; SEL.ids = new Set();
+  document.body.classList.remove('seleccionando'); delete $('#app').dataset.sel;
+  $('#selbar').classList.remove('on');
+  $$('[data-sel].sel').forEach(f => f.classList.remove('sel'));
+  if (donde === 'cosas') refrescarCosas(); else { const p = paneActual(); if (p) { p.innerHTML = paneHTML(S.cat); p.querySelectorAll('[data-gem]').forEach(pintarGema); } }
+}
+function marcarSel() {
+  if (!SEL.on) return;
+  const filas = filasSel(), hay = new Set(filas.map(f => f.dataset.id));
+  [...SEL.ids].forEach(id => { if (!hay.has(id)) SEL.ids.delete(id); });
+  filas.forEach(f => f.classList.toggle('sel', SEL.ids.has(f.dataset.id)));
+  const n = SEL.ids.size;
+  $('#sel-n').textContent = n ? `${n} ${n === 1 ? 'elegida' : 'elegidas'}` : 'Elige tareas';
+  $('#sel-todo').textContent = filas.length && filas.every(f => SEL.ids.has(f.dataset.id)) ? 'Ninguna' : 'Todas';
+  $$('#selbar .sa').forEach(b => b.disabled = !n);
+}
+
 (function pulsacionLarga() {
   let t = 0, x = 0, y = 0;
   document.addEventListener('pointerdown', e => {
-    const f = e.target.closest('#s-list .task .front'); clearTimeout(t);
+    clearTimeout(t); t = 0;
+    if (SEL.on) return;
+    const f = e.target.closest('#s-list .task:not(.done), #drawers .crow');
     if (!f || e.target.closest('[data-act="hecho"]')) return;
     x = e.clientX; y = e.clientY;
-    t = setTimeout(() => { arrastrando = true; abrirFila(f.parentElement); setTimeout(() => arrastrando = false, 400); }, 480);
+    t = setTimeout(() => { t = 0; arrastrando = true; abrirPop(f); setTimeout(() => arrastrando = false, 400); }, 450);
   }, { passive: true });
   document.addEventListener('pointermove', e => { if (t && Math.hypot(e.clientX - x, e.clientY - y) > 8) { clearTimeout(t); t = 0; } }, { passive: true });
   ['pointerup', 'pointercancel'].forEach(n => document.addEventListener(n, () => { clearTimeout(t); t = 0; }));
-  document.addEventListener('contextmenu', e => { if (e.target.closest('#s-list .task')) e.preventDefault(); });
+  document.addEventListener('contextmenu', e => { if (e.target.closest('#s-list .task, #drawers .crow')) e.preventDefault(); });
 })();
 
 // ---------- gestos ----------
@@ -1782,6 +2216,8 @@ let arrastrando = false;
   document.addEventListener('pointerdown', e => {
     if (e.button > 0 || deslizando) return;
     const t = e.target;
+    if (POP.id || $('#pop').classList.contains('on')) { g = null; return; }
+    if (SEL.on && !t.closest('#sh-cosas')) { g = null; return; }
     if (t.closest('input,textarea,select')) return;
     const enApp = $('#app').getBoundingClientRect();
     const x = e.clientX - enApp.left;
@@ -1938,6 +2374,13 @@ let arrastrando = false;
 
 // ---------- títulos con palabra clave, grupo, personas y rayo ----------
 const BOLT = '<svg class="bolt" width="9" height="13" viewBox="0 0 9 13" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" aria-label="Rápida"><path d="M5.2 1L1.2 7.3h3l-.7 4.7 4.2-6.6H4.6z"/></svg>';
+const ICO3 = {
+  abrir: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 3.5h4v4M14.5 3.5L8 10M12.5 10.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/></svg>',
+  sel: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="6.5"/><path d="M6.2 9.2l1.9 1.9 3.7-3.9"/></svg>',
+  mover: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h3l1.5 1.5H14a1.5 1.5 0 0 1 1.5 1.5v5.5A1.5 1.5 0 0 1 14 14H4a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M7.5 9.6h4M9.9 7.8l1.7 1.8-1.7 1.8"/></svg>',
+  hoy: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="3.2"/><path d="M9 1.8v1.6M9 14.6v1.6M1.8 9h1.6M14.6 9h1.6M3.9 3.9l1.1 1.1M13 13l1.1 1.1M3.9 14.1L5 13M13 5l1.1-1.1"/></svg>',
+  borrar: '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 5.5h13M8 5.5V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M5.5 5.5l.8 10.2a1.5 1.5 0 0 0 1.5 1.3h4.4a1.5 1.5 0 0 0 1.5-1.3l.8-10.2"/></svg>'
+};
 const ICO2 = {
   phone: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 1.8h2.3l1.1 3-1.5 1a7.5 7.5 0 0 0 3.6 3.6l1-1.5 3 1.1v2.3a1.4 1.4 0 0 1-1.5 1.4A11.6 11.6 0 0 1 1.8 3.3a1.4 1.4 0 0 1 1.4-1.5z"/></svg>',
   wa: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.3 13.7l.8-2.8A6.2 6.2 0 1 1 5.4 13z"/><path d="M6 5.6c0 2.3 1.9 4.3 4.3 4.4l.8-1-1.4-.7-.6.6a3.4 3.4 0 0 1-1.7-1.7l.6-.6-.7-1.4-1 .4z"/></svg>',
