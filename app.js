@@ -19,7 +19,7 @@ const SUB = {
 const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const DIA_MS = 864e5;
-const VERSION = '2.1.4';
+const VERSION = '2.1.6';
 // Esta copia de Posso es la versión:
 //   'directo' = «Con texto en directo»: el dictado del iPhone escribe mientras hablas (más rápida; suena el micro de Apple)
 //   'audio'   = «Sin dictado»: solo graba el audio y Gemini lo transcribe (sin sonido; unos segundos más lenta)
@@ -656,13 +656,61 @@ function paneHTML(c) {
       <div class="s">${vacio ? (c === 'hoy' ? 'Aprovecha.' : 'Cuando digas algo así, aparecerá aquí.') : !pend.length ? (c === 'hoy' ? 'Por hoy, ya está.' : 'No queda nada pendiente.') : SUB[c]}</div></div>`;
   const cuerpo = vacio
     ? `<div class="empty-state"><div class="gem" data-gem style="--s:min(200px,26vh);opacity:.9"></div><p>Si te ronda algo, toca la gema y cuéntamelo.</p></div>`
-    : `<div class="items">${items.map(i => fila(i, c)).join('')}
+    : `<div class="items">${pend.map(i => fila(i, c)).join('')}
       <div class="cheer">Una menos.</div>
+      ${completadasHTML(c, items.filter(i => i.hecho))}
       ${pend.length ? `<div class="list-note">Mantén pulsada una tarea para ver sus opciones, o toca Editar para elegir varias. Desliza a los lados para cambiar de categoría.</div>` : ''}</div>`;
   const chips = grupos.length ? `<div class="grupos">${['', ...grupos].map(g =>
     `<button class="csel${g === filtro ? ' on' : ''}" data-act="grupo" data-v="${esc(g)}">${g ? esc(g) : 'Todos'}</button>`).join('')}</div>` : '';
   return head + chips + `<div class="scroll">${cuerpo}</div>`;
 }
+/** «Completadas · 8 ›»: las hechas, recogidas y plegadas por defecto. Recuerda si cada categoría la tenías abierta. */
+const compAbierta = c => !!(S.local.compAbiertas && S.local.compAbiertas[c]);
+function completadasHTML(c, hechas) {
+  if (!hechas.length) return '';
+  const on = compAbierta(c);
+  return `<div class="comp${on ? ' on' : ''}" data-cat="${c}">
+    <button class="comp-h" data-act="completadas" data-cat="${c}" aria-expanded="${on}">
+      <span>Completadas</span><b class="comp-n">${hechas.length}</b>
+      <i class="comp-flecha"><svg width="14" height="9" viewBox="0 0 14 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 2l5 5 5-5"/></svg></i></button>
+    <div class="comp-wrap"><div class="comp-in">
+      ${hechas.map(i => fila(i, c)).join('')}
+      <div class="comp-pie"><button class="link comp-borrar" data-act="borrar-completadas" data-cat="${c}">Borrar completadas</button></div>
+    </div></div></div>`;
+}
+const EASE = 'cubic-bezier(.2,.8,.2,1)';
+function plegarCompletadas(btn) {
+  const comp = btn.closest('.comp'); if (!comp || comp.dataset.anim) return;
+  const c = comp.dataset.cat, wrap = comp.querySelector('.comp-wrap');
+  const abrir = !comp.classList.contains('on');
+  S.local.compAbiertas = Object.assign({}, S.local.compAbiertas, { [c]: abrir }); persist();
+  btn.setAttribute('aria-expanded', abrir); vib();
+  if (reduceMotion()) { comp.classList.toggle('on', abrir); return; }
+  comp.dataset.anim = '1';
+  if (abrir) {
+    comp.classList.add('on');
+    const h = wrap.scrollHeight;
+    const a = wrap.animate([{ height: '0px' }, { height: h + 'px' }], { duration: 400, easing: EASE });
+    [...wrap.querySelectorAll('.task, .comp-pie')].forEach((e, k) => e.animate(
+      [{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }],
+      { duration: 320, delay: 60 + Math.min(k, 10) * 35, easing: EASE, fill: 'backwards' }));
+    a.onfinish = a.oncancel = () => { delete comp.dataset.anim; };
+    // que se vea lo que se ha abierto
+    setTimeout(() => { const sc = comp.closest('.scroll'); if (sc) { const r = comp.getBoundingClientRect(), rs = sc.getBoundingClientRect();
+      if (r.top > rs.bottom - 140) sc.scrollBy({ top: Math.min(r.top - rs.bottom + 220, h), behavior: 'smooth' }); } }, 120);
+  } else {
+    const h = wrap.offsetHeight;
+    const a = wrap.animate([{ height: h + 'px', opacity: 1 }, { height: '0px', opacity: .3 }], { duration: 300, easing: 'cubic-bezier(.4,0,.6,1)' });
+    a.onfinish = a.oncancel = () => { comp.classList.remove('on'); delete comp.dataset.anim; };
+  }
+}
+function borrarCompletadas(btn) {
+  const c = btn.dataset.cat, ids = deCat(c).filter(i => i.hecho).map(i => i.id);
+  if (!ids.length) return;
+  const comp = btn.closest('.comp'); if (comp) encoger(comp);
+  setTimeout(() => { lote(ids.map(id => OP.quitar(id))); toast(ids.length === 1 ? 'Borrada' : `${ids.length} borradas`, 'Deshacer', () => deshacer('lista')); }, reduceMotion() ? 0 : 300);
+}
+
 function nuevoPane(c) {
   const p = document.createElement('div');
   p.className = 'pane'; p.dataset.cat = c; p.innerHTML = paneHTML(c);
@@ -693,6 +741,7 @@ function refrescarLista() {
     refrescando = null;
     const antes = {}; pane.querySelectorAll('.task').forEach(e => antes[e.dataset.id] = e.getBoundingClientRect().top);
     const nAntes = (pane.querySelector('.headcard .n') || {}).textContent;
+    const cnAntes = +((pane.querySelector('.comp-n') || {}).textContent || 0);
     const sc = pane.querySelector('.scroll'), top = sc ? sc.scrollTop : 0;
     pane.innerHTML = paneHTML(S.cat);
     pane.querySelectorAll('[data-gem]').forEach(pintarGema);
@@ -700,6 +749,13 @@ function refrescarLista() {
     const n = pane.querySelector('.headcard .n');
     if (n && nAntes && n.textContent !== nAntes) { const t = n.textContent; n.textContent = nAntes; cambiaTexto(n, t); }
     flip(pane, antes);
+    const comp = pane.querySelector('.comp'), cn = pane.querySelector('.comp-n');
+    if (comp && !cnAntes && !reduceMotion()) {
+      const h = comp.offsetHeight;
+      comp.animate([{ height: '0px', opacity: 0 }, { height: h + 'px', opacity: 1 }], { duration: 360, easing: EASE });
+    } else if (cn && +cn.textContent > cnAntes && !reduceMotion()) {
+      cn.animate([{ transform: 'none' }, { transform: 'scale(1.35)' }, { transform: 'none' }], { duration: 420, easing: 'cubic-bezier(.3,1.4,.5,1)' });
+    }
     marcarSel();
   };
   if (salen.length && !reduceMotion()) {
@@ -794,11 +850,20 @@ function marcarHecho(id, btn) {
   if (ck) { ck.classList.toggle('done', nuevo); ck.classList.remove('pop'); void ck.offsetWidth; ck.classList.add('pop'); }
   const task = btn.closest('.task'); if (task) task.classList.toggle('done', nuevo);   // el tachado se dibuja poco a poco
   vib();
+  // si «Completadas» está plegada, la tarea baja deslizándose hasta ella antes de recogerse
+  const pane = task && task.closest('.pane');
+  const destino = pane && nuevo && !task.closest('.comp') && (pane.querySelector('.comp:not(.on) .comp-h'));
+  if (destino && !reduceMotion()) setTimeout(() => {
+    const dy = destino.getBoundingClientRect().top - task.getBoundingClientRect().top;
+    task.style.zIndex = 2;
+    task.animate([{ transform: 'none', opacity: 1 }, { transform: `translateY(${Math.max(0, dy)}px) scale(.94)`, opacity: 0 }],
+      { duration: 380, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' });
+  }, 420);
   setTimeout(() => {
     hacer(OP.cambiar(id, i.items && i.items.length ? { hecho: nuevo, items: i.items.map(x => Object.assign({}, x, { hecho: nuevo })) } : { hecho: nuevo }));
     refrescarLista(); refrescarCosas();
     if (nuevo) setTimeout(() => { const ch = paneActual() && paneActual().querySelector('.cheer'); if (ch) { ch.classList.add('on'); setTimeout(() => ch.classList.remove('on'), 2200); } }, 60);
-  }, 520);
+  }, destino && !reduceMotion() ? 820 : 520);
 }
 function refrescarCosas() { if ($('#sh-cosas').classList.contains('on')) pintarCajones(false); }
 function borrarFila(el, id) {
@@ -1529,8 +1594,10 @@ function ordenarAqui(texto) {
     if (esNueva(yy) && !/^(?:el|la|a)\s/i.test(yy)) return ' ' + yy;                       // «ir al súper, bueno no, mejor pedirlo online»
     for (let n = Math.min(2, pal.length); n >= 1; n--) {                                       // se cambia desde la palabra que se repite
       const clave = pal.slice(0, n).join(' ').toLowerCase();
-      for (let k = xw.length - n; k >= 0; k--) if (xw.slice(k, k + n).join(' ').toLowerCase() === clave) return ' ' + xw.slice(0, k).concat(pal).join(' ');
+      for (let k = xw.length - n; k >= Math.max(0, xw.length - n - 4); k--) if (xw.slice(k, k + n).join(' ').toLowerCase() === clave) return ' ' + xw.slice(0, k).concat(pal).join(' ');
     }
+    const prep = /^(?:de|del|en|a|al|para|con|por)$/i;
+    if (prep.test(pal[0]) && xw.length > 2 && prep.test(xw[xw.length - 2])) return ' ' + xw.slice(0, -2).concat(pal).join(' ');   // «del baño digo de la cocina»
     return ' ' + (xw.length > 1 ? xw.slice(0, -1).concat(pal) : pal).join(' ');               // «comprar tres, no, cuatro botellas»
   }
   tx = tx.replace(/\(([^()]{3,})\)/g, (m, d) => /,|\sy\s/.test(d) ? ` __L${LISTAS.push(partir(d)) - 1}__ ` : m);
@@ -1550,9 +1617,10 @@ function ordenarAqui(texto) {
   // dictado sin comas ni puntos: estas palabras siempre empiezan otra cosa
   tx = tx.replace(/\s+(?:así que|asi que|ah y|ah,? y|y ah|y luego|y después|y despues|y también|y tambien)\s+/gi, ' ;¦');
   tx = tx.replace(/\s+ah(?=\s|$)/gi, ' ; ');
+  tx = tx.replace(/(\S+)\s+(?=lo del?\s)/gi, (m, a) => /^(?:para|por|con|de|del|sobre|en|a|y|o|que|todo|es|mont[oó]n|mucho|bastante|poco|ralla|raya|agobia|preocupa|rabia|molesta|igual)$/i.test(a) ? m : a + ' ;¦');   // «… la semana que viene lo de apuntarme…»
   tx = tx.replace(/\s+(?:y\s+)?(?:bueno\s+|eso\s+)?(?:también|tambien)\s+(?=[a-záéíóúñ]+(?:ar|er|ir)(?:le|les|la|lo|me|se)?\s)/gi, ' ;¦');   // «… y eso también comprar…»
   // «… de segundo mañana a las cinco gimnasio», «… acuario todos los domingos a las 8 preparar la semana»: la fecha empieza otra idea
-  const FECHA_MITAD = '(?:(?:todos los|todas las|cada) (?:' + DIA + 's?|d[ií]as|mañanas|tardes|noches|semanas?|\\S+ d[ií]as)|pasado mañana|mañana|hoy|esta tarde|esta noche|(?:el |este )' + DIA + ')' +
+  const FECHA_MITAD = '(?:(?:todos los|todas las|cada) (?:' + DIA + 's?|d[ií]as|mañanas|tardes|noches|semanas?|\\S+ (?:d[ií]as|semanas|meses))|pasado mañana|mañana|hoy|esta tarde|esta noche|(?:el |este )' + DIA + ')' +
     '(?: (?:a las \\S+(?: y media| y cuarto| menos cuarto)?(?: de la (?:mañana|tarde|noche))?|por la (?:mañana|tarde|noche)|a (?:primera|segunda|tercera|[uú]ltima) hora))?';
   tx = tx.replace(new RegExp('(\\S+)\\s+(' + FECHA_MITAD + ')\\s+(\\S+)', 'gi'), (m, ant, f, sig, off, str) => {
     const ini = Math.max(str.lastIndexOf(',', off), str.lastIndexOf('.', off), str.lastIndexOf(';', off), str.lastIndexOf('¦', off), 0);
@@ -1573,7 +1641,7 @@ function ordenarAqui(texto) {
     return ant + ' ; ';
   });
   // «… y el lunes hay…», «… y subir…»: una idea nueva aunque vaya con «y»
-  tx = tx.replace(new RegExp('\\s+y\\s+(?=(?:el |este |mañana|pasado mañana|hoy |luego|despu[eé]s|tambi[eé]n|alg[uú]n d[ií]a|me gustar|' + DIA + '|por la (?:mañana|tarde|noche)|ll[eé]vale|tr[aá]eme|p[aá]sate|[a-záéíóúñ]+(?:ar|er|ir)(?:le|les|la|las|lo|los|me|se)?\\s))', 'gi'), (m, k, s) => {
+  tx = tx.replace(new RegExp('\\s+y\\s+(?=(?:el |este |mañana|pasado mañana|hoy |luego|despu[eé]s|tambi[eé]n|alg[uú]n d[ií]a|me gustar|lo del? |' + DIA + '|por la (?:mañana|tarde|noche)|ll[eé]vale|tr[aá]eme|p[aá]sate|[a-záéíóúñ]+(?:ar|er|ir)(?:le|les|la|las|lo|los|me|se)?\\s))', 'gi'), (m, k, s) => {
     const sig = s.slice(k + m.length, k + m.length + 20), ant = s.slice(Math.max(0, k - 12), k);
     if (new RegExp(DIA + 's?$', 'i').test(ant) && new RegExp('^(?:los )?' + DIA, 'i').test(sig)) return m;   // «los martes y jueves»
     return NO_VERBO.test(sig) ? m : ' ;¦';
@@ -1697,7 +1765,7 @@ function ordenarAqui(texto) {
     const i = Object.assign({ titulo: '', frase: bruto, cat: 'hoy', carpeta: '', urgente: false, aviso: '' }, fechaDe(l));
     aplicarModif(i, l);
     let tit = t
-      .replace(/,?\s*(?:lo dejo para|para) alg[uú]n d[ií]a.*$/i, '').replace(/,?\s+(?:cuando pueda|el (?:verano|a[nñ]o|invierno) que viene)\b/i, '').replace(/,?\s*(?:no corre prisa|(?:eso )?(?:me )?da igual|s[ií] o s[ií]).*$/i, '')
+      .replace(/,?\s*(?:lo dejo para|para) alg[uú]n d[ií]a.*$/i, '').replace(/,?\s+(?:cuando pueda|el (?:verano|a[nñ]o|invierno) que viene|alg[uú]n d[ií]a)\b/i, '').replace(/,?\s*(?:no corre prisa|(?:eso )?(?:me )?da igual|s[ií] o s[ií]).*$/i, '')
       .replace(/,?\s*(?:eso es|es) urgente.*$/i, '').replace(/,?\s*(?:urgente|cuanto antes)$/i, '')
       .replace(/\s+pero bueno.*$/i, '').replace(/\s+antes de que se agoten$/i, '').replace(/,?\s+que si no\b.*$/i, '').replace(/^(?:dentro de \S+ (?:d[ií]as|semanas|meses)|(?:el )?\d{1,2} de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre))\s+/i, '');
     let a;
@@ -1891,6 +1959,8 @@ const ACT = {
   'abrir-cat': el => abrirCajon(el),
   cat: el => irACat(el.dataset.cat),
   hecho: el => marcarHecho(el.dataset.id, el),
+  completadas: el => plegarCompletadas(el),
+  'borrar-completadas': el => borrarCompletadas(el),
   editar: el => abrirIdea({ tipo: 'guardada', id: el.dataset.id }),
   'editar-borrador': el => abrirIdea({ tipo: 'borrador', k: +el.dataset.k }),
   'cerrar-idea': () => cerrarIdea(),

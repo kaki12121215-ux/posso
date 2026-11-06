@@ -576,3 +576,22 @@ label.srow{position:relative}
 .selbar .sa.del{color:var(--urg-txt);background:var(--urg-bg)}
 .selbar .sa:disabled{opacity:.4}
 .seleccionando #drawers{padding-bottom:calc(170px + var(--sb))}
+
+
+/* ---------- Completadas: plegables, debajo de lo pendiente ---------- */
+.comp{margin-top:6px;overflow:hidden}
+.comp-h{display:flex;align-items:center;gap:8px;width:100%;padding:16px 22px 12px;font-size:14px;font-weight:600;color:var(--ink2);text-align:left;transition:opacity .2s}
+.comp-h:active{opacity:.6}
+.comp-h span{flex:none}
+.comp-n{font-size:12px;font-weight:700;color:var(--ink2);background:var(--soft);border-radius:10px;padding:2px 8px;min-width:24px;text-align:center;display:inline-block}
+.comp-flecha{margin-left:auto;width:32px;height:32px;border-radius:50%;background:var(--soft);color:var(--deep);display:flex;align-items:center;justify-content:center;flex:none;
+  transition:transform .35s cubic-bezier(.2,.8,.2,1),background-color .25s}
+.comp-flecha svg{display:block;margin-top:1px}
+.comp.on .comp-flecha{transform:rotate(180deg)}
+.comp-h:active .comp-flecha{background:var(--k-hoy)}
+.comp-wrap{display:none;overflow:hidden}
+.comp.on .comp-wrap{display:block}
+.comp-pie{text-align:center;padding:6px 0 4px}
+.comp-borrar{color:var(--urg-txt);font-size:13px}
+.seleccionando .comp{opacity:.45;pointer-events:none}
+@media (prefers-reduced-motion:reduce){.comp-flecha{transition:none}}
