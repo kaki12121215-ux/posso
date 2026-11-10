@@ -19,7 +19,7 @@ const SUB = {
 const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const DIA_MS = 864e5;
-const VERSION = '2.1.6';
+const VERSION = '2.1.7';
 // Esta copia de Posso es la versión:
 //   'directo' = «Con texto en directo»: el dictado del iPhone escribe mientras hablas (más rápida; suena el micro de Apple)
 //   'audio'   = «Sin dictado»: solo graba el audio y Gemini lo transcribe (sin sonido; unos segundos más lenta)
@@ -1558,6 +1558,9 @@ function pintarFondo() {
  *  (compra, «X: a, b y c», «(a, b y c)»), quita muletillas y correcciones, y entiende fechas,
  *  repeticiones, «no corre prisa», «da igual»… */
 function ordenarAqui(texto) {
+  // «Es urgente llamar al dentista» → «llamar al dentista, es urgente» (si no, la frase se quedaba sin tarea)
+  texto = String(texto || '').replace(/(^|[.!?;]\s*)(?:(?:y\s+)?(?:es|eso es)\s+)?urgente[,:]?\s+(?!que\b)([^.!?;]+)/gi,
+    (m, ini, resto) => ini + resto.replace(/^\w/, c => c.toUpperCase()) + ', es urgente');
   const DIA = '(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)';
   const NUMS = { un: 1, una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12, quince: 15, veinte: 20, treinta: 30 };
   const num = s => NUMS[s] || +s || 0;
@@ -1662,7 +1665,7 @@ function ordenarAqui(texto) {
   };
   const soloModif = l => l.replace(MODIF, ' ').replace(/[\s,.…]+/g, ' ').trim().split(' ').filter(w => w.length > 2).length <= 1;
   const nuevaLista = (titulo, items, bruto) => {
-    const i = { titulo, frase: bruto, cat: 'hoy', carpeta: '', urgente: false, aviso: '', items: items.slice(), lista: true };
+    const i = { titulo, frase: bruto, cat: 'semana', carpeta: '', urgente: false, aviso: '', items: items.slice(), lista: true };   // sin fecha → Esta semana
     ideas.push(i); return i;
   };
 
@@ -1762,7 +1765,7 @@ function ordenarAqui(texto) {
     let tema = '';
     if (prev && prev.tema && !prev.lista && ideas.length && esNueva(t)) { tema = prev.titulo; ideas.pop(); }
     // g) una idea nueva
-    const i = Object.assign({ titulo: '', frase: bruto, cat: 'hoy', carpeta: '', urgente: false, aviso: '' }, fechaDe(l));
+    const i = Object.assign({ titulo: '', frase: bruto, cat: 'semana', carpeta: '', urgente: false, aviso: '' }, fechaDe(l));   // sin fecha → Esta semana
     aplicarModif(i, l);
     let tit = t
       .replace(/,?\s*(?:lo dejo para|para) alg[uú]n d[ií]a.*$/i, '').replace(/,?\s+(?:cuando pueda|el (?:verano|a[nñ]o|invierno) que viene|alg[uú]n d[ií]a)\b/i, '').replace(/,?\s*(?:no corre prisa|(?:eso )?(?:me )?da igual|s[ií] o s[ií]).*$/i, '')
