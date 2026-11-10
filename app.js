@@ -19,7 +19,7 @@ const SUB = {
 const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const DIA_MS = 864e5;
-const VERSION = '2.1.7';
+const VERSION = '2.1.8';
 // Esta copia de Posso es la versión:
 //   'directo' = «Con texto en directo»: el dictado del iPhone escribe mientras hablas (más rápida; suena el micro de Apple)
 //   'audio'   = «Sin dictado»: solo graba el audio y Gemini lo transcribe (sin sonido; unos segundos más lenta)
