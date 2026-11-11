@@ -201,11 +201,22 @@
     <div class="scroll" id="per-body"></div>
   </section>
 
+  <!-- ===== Feedback ===== -->
+  <section class="screen" id="s-fb">
+    <div class="topbar" style="height:44px"><div class="side"><button class="iconbtn back" data-act="atras" aria-label="Atrás"><svg width="11" height="19" viewBox="0 0 11 19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2L2 9.5 9 17"/></svg></button></div><div class="side r fbx"><button class="fb-exp" data-act="fb-exportar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 13v5a2 2 0 002 2h10a2 2 0 002-2v-5"/></svg>Exportar</button></div></div>
+    <div class="scroll" id="fb-body"></div>
+    <button class="fb-fab" data-act="fb-nueva"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Nueva nota</button>
+  </section>
+
   <div id="scrim-scr" data-act="atras"></div>
 
   <!-- ===== Hoja: una idea ===== -->
   <div class="scrim" id="scrim-idea" data-act="cerrar-idea"></div>
   <div class="sheet" id="sh-idea"></div>
+
+  <!-- ===== Hoja: Feedback (nota nueva / exportar) ===== -->
+  <div class="scrim" id="scrim-fb" data-act="fb-cerrar"></div>
+  <div class="sheet" id="sh-fb"></div>
 
   <div id="carga"><i></i></div>
   <div class="pop-scrim" id="pop-scrim" data-act="pop-cerrar"></div>

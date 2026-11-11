@@ -19,7 +19,7 @@ const SUB = {
 const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const DIA_MS = 864e5;
-const VERSION = '2.1.8';
+const VERSION = '2.2.0';
 // Esta copia de Posso es la versión:
 //   'directo' = «Con texto en directo»: el dictado del iPhone escribe mientras hablas (más rápida; suena el micro de Apple)
 //   'audio'   = «Sin dictado»: solo graba el audio y Gemini lo transcribe (sin sonido; unos segundos más lenta)
@@ -104,6 +104,7 @@ function save(k, v) { try { localStorage.setItem('posso.' + k, JSON.stringify(v)
 const S = {
   cfg: load('cfg', null),                       // { url, key } · null = modo prueba
   ideas: load('ideas', []),
+  fb: load('fb', []),                           // notas de feedback
   papelera: {},                                 // ideas borradas (para deshacer)
   carpetas: load('carpetas', ['Instituto', 'Familia', 'Casa']),
   ajustes: load('ajustes', { avisoSuaveDias: 3, horaAvisos: '09:00', alarmaCalendario: false, avisosActivos: true }),
@@ -117,7 +118,7 @@ const S = {
 };
 function persist() {
   save('ideas', S.ideas); save('carpetas', S.carpetas); save('ajustes', S.ajustes);
-  save('local', S.local); save('outbox', S.outbox); save('cfg', S.cfg); save('habituales', S.habituales);
+  save('local', S.local); save('outbox', S.outbox); save('cfg', S.cfg); save('habituales', S.habituales); save('fb', S.fb);
 }
 
 // =====================================================================
@@ -145,7 +146,7 @@ function carga(d) {
 }
 async function api(accion, datos = {}, espera = 30000) {
   if (!S.cfg) throw new Error('sin-conexion');
-  const visible = !['pendientes', 'destino', 'listar', 'actualizar', 'marcarItem', 'borrar', 'restaurar', 'guardar', 'habituales', 'ajustes', 'carpetas'].includes(accion);
+  const visible = !['pendientes', 'destino', 'listar', 'actualizar', 'marcarItem', 'borrar', 'restaurar', 'guardar', 'habituales', 'ajustes', 'carpetas', 'fbListar', 'fbHecho', 'fbIniciar', 'fbParte', 'fbGuardar', 'fbArchivo'].includes(accion);
   if (visible) carga(1);
   try { return await apiYa(accion, datos, espera); } finally { if (visible) carga(-1); }
 }
@@ -402,7 +403,7 @@ function animarGema(el, clase) {
 //  - fade: fundido con un ligero desplazamiento hacia arriba
 //  - hoja (escribir, ajustes, recordar): sube desde abajo con un pequeño rebote; lo de detrás se oscurece
 //  - none: sin animación (lo usa la tarjeta que crece)
-const HOJAS = ['s-type', 's-aj', 's-rec', 's-hecho', 's-per'];
+const HOJAS = ['s-type', 's-aj', 's-rec', 's-hecho', 's-per', 's-fb'];
 let actual = null;
 const pila = [];                                  // [{ id, hoja }]
 const ANIM_MS = 420;
@@ -414,7 +415,7 @@ function ir(id, modo = 'push', { sinPila = false } = {}) {
   if (reduceMotion() && modo !== 'none') modo = 'fade';
   if (vieja && !sinPila && (modo === 'push' || modo === 'hoja')) pila.push({ id: vieja.id, hoja: modo === 'hoja' });
   salirSel(); cerrarPop();
-  cerrarHoja('sh-cosas', modo === 'none'); cerrarHoja('sh-idea', modo === 'none');
+  cerrarHoja('sh-cosas', modo === 'none'); cerrarHoja('sh-idea', modo === 'none'); cerrarHoja('sh-fb', true);
   $('#toast').classList.remove('on');
 
   // si salimos de una hoja hacia otra cosa (p. ej. escribir → ordenando), lo de debajo se va también
@@ -442,7 +443,7 @@ function ir(id, modo = 'push', { sinPila = false } = {}) {
   }
   actual = nueva;
   setTimeout(() => { if (nueva === actual) nueva.className = 'screen on' + (modo === 'hoja' ? ' hojascr' : ''); }, ANIM_MS + 120);
-  const pint = { 's-home': pintarInicio, 's-list': () => pintarLista(0), 's-aj': pintarAjustes, 's-res': pintarResultado, 's-hecho': pintarHechas, 's-per': pintarPersonas };
+  const pint = { 's-home': pintarInicio, 's-list': () => pintarLista(0), 's-aj': pintarAjustes, 's-res': pintarResultado, 's-hecho': pintarHechas, 's-per': pintarPersonas, 's-fb': pintarFeedback };
   pint[id] && pint[id]();
   pintarUR();
 }
@@ -458,7 +459,7 @@ function atras(opc = {}) {
     setTimeout(() => { if (de !== actual) de.className = 'screen'; de.style.transform = ''; de.style.transition = ''; }, 330);
     debajo.className = 'screen on';
     actual = debajo;
-    const pint = { 's-home': () => { pintarInicio(); tarjetaOlvidar(false); }, 's-list': () => pintarLista(0, true), 's-aj': pintarAjustes, 's-res': pintarResultado, 's-hecho': pintarHechas };
+    const pint = { 's-home': () => { pintarInicio(); tarjetaOlvidar(false); }, 's-list': () => pintarLista(0, true), 's-aj': pintarAjustes, 's-res': pintarResultado, 's-hecho': pintarHechas, 's-fb': pintarFeedback };
     pint[debajo.id] && pint[debajo.id]();
     pintarUR();
     return;
@@ -526,7 +527,7 @@ async function volverACajon() {
 }
 
 // ---- hojas que suben desde abajo ----
-const scrimDe = id => id === 'sh-cosas' ? $('#scrim-cosas') : $('#scrim-idea');
+const scrimDe = id => id === 'sh-cosas' ? $('#scrim-cosas') : id === 'sh-fb' ? $('#scrim-fb') : $('#scrim-idea');
 function abrirHoja(id, instantanea) {
   const sh = $('#' + id), scrim = scrimDe(id);
   sh.style.transform = ''; scrim.style.opacity = '';
@@ -1053,6 +1054,11 @@ function pintarAjustes() {
       ${row('puente', 'Otras cuentas (Posso puente)', 'cómo')}
     </div>
     <div class="aj-note" style="padding:8px 32px 0">Pon la etiqueta «Posso» a un correo y en unos minutos aparece como tarea, con un título claro y el enlace al correo.</div>
+    <div class="aj-h">Feedback</div>
+    <div class="card">
+      ${row('feedback', 'Notas para mejorar Posso', fbCuentas().pend ? fbCuentas().pend + ' pendientes' : 'Apuntar')}
+    </div>
+    <div class="aj-note" style="padding:8px 32px 0">Apunta lo que falla o lo que mejorarías, con capturas y vídeos, y expórtalo en un zip.</div>
     <div class="aj-h">Voz y cuenta</div>
     <div class="card">
       ${tg('revisar', !S.local.sinRevisar, 'Ver el resultado antes de guardar')}
@@ -1953,6 +1959,18 @@ function toast(texto, boton, accion) {
 function conSw(el, fn) { const sw = el.querySelector('.sw'); if (sw) sw.classList.toggle('on'); vib(); setTimeout(fn, sw ? 280 : 0); }
 const ACT = {
   ajustes: () => ir('s-aj', 'push'),
+  feedback: () => ir('s-fb', 'push'),
+  'fb-tab': el => fbCambiarTab(el.dataset.v),
+  'fb-hecho': el => fbHecho(el.dataset.id, el),
+  'fb-nueva': () => fbAbrirNueva(),
+  'fb-exportar': () => fbAbrirExportar(),
+  'fb-cerrar': () => { if (FB.exp && FB.exp.ocupado) return toast('Estoy preparando el zip, espera un momento.'); FB.nueva ? fbCerrarNueva() : cerrarHoja('sh-fb'); },
+  'fb-sec': el => { if (!FB.nueva) return; FB.nueva.seccion = el.dataset.v; vib(); $$('#fb-secs .csel').forEach(b => b.classList.toggle('on', b === el)); },
+  'fb-quitar': el => { if (!FB.nueva || FB.nueva.subiendo) return; FB.nueva.files.splice(+el.dataset.k, 1); fbPintarFiles(); },
+  'fb-guardar': () => fbGuardar(),
+  'fb-ver': el => fbVer(el.dataset.f, el.dataset.t),
+  'fb-exp-tipo': el => fbExpTipo(el),
+  'fb-descargar': () => fbDescargar(),
   atras: () => atras(),
   'ir-inicio': () => irInicio(),
   hablar: () => empezarVoz(),
@@ -2734,6 +2752,388 @@ function pintarHechas() {
     <div class="sub">Lo terminado en los últimos 7 días. Toca el círculo si al final no estaba hecho.</div>
     <div class="items enter" style="padding-bottom:60px">${html || '<div class="list-note">Aún no has terminado nada esta semana.</div>'}</div>`;
   [...$('#hecho-body .items').children].forEach((e, k) => e.style.setProperty('--i', Math.min(k, 10)));
+}
+
+// =====================================================================
+// FEEDBACK · apuntar lo que falla o lo que mejorarías, con capturas y vídeos
+// =====================================================================
+const FB_SECCIONES = ['General', 'Inicio', 'Hablar', 'Escribir', 'Resultado', 'Hoy', 'Esta semana', 'Algún día', 'Olvidar', 'Carpetas', 'Recordar', 'Personas', 'Avisos', 'Ajustes'];
+const FB_CAT = { 'Hoy': 'hoy', 'Esta semana': 'semana', 'Algún día': 'algun', 'Olvidar': 'olvidar' };
+const FB_TROZO = 1572864;                 // 1,5 MB (múltiplo de 256 KB, como pide Google para subir por partes)
+const FB_MAX_SEG = 65, FB_MAX_MB = 150;   // un vídeo: hasta ~1 minuto y 150 MB
+const FB = { tab: 'pend', nueva: null, exp: { todas: false, listo: null, ocupado: false } };
+const FB_ICO = {
+  exp: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 13v5a2 2 0 002 2h10a2 2 0 002-2v-5"/></svg>',
+  mas: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  x: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  cerrar: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  play: '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5l11 7-11 7z"/></svg>',
+  cam: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13.5" r="3.3"/></svg>',
+  info: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.1"/></svg>'
+};
+const fbMB = b => { const m = b / 1048576; return m >= 10 ? String(Math.round(m)) : m < 0.1 ? '0,1' : String(Math.round(m * 10) / 10).replace('.', ','); };
+const fbDur = s => { s = Math.round(s || 0); return Math.floor(s / 60) + ':' + pad(s % 60); };
+function fbFecha(ts) {
+  const d = new Date(ts), h = new Date(); h.setHours(0, 0, 0, 0);
+  const n = Math.round((h - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / DIA_MS), hm = d.getHours() + ':' + pad(d.getMinutes());
+  if (n <= 0) return 'Hoy, ' + hm;
+  if (n === 1) return 'Ayer, ' + hm;
+  if (n < 7) return cap(DIAS[d.getDay()]) + ', ' + hm;
+  return d.getDate() + ' ' + MESES[d.getMonth()] + ', ' + hm;
+}
+function fbCuentas() { const p = S.fb.filter(n => !n.hecho).length; return { pend: p, hechas: S.fb.length - p, todas: S.fb.length }; }
+const fbTag = sec => `<span class="fb-tag${FB_CAT[sec] ? ' k-' + FB_CAT[sec] : ''}">${esc(sec)}</span>`;
+function fbMiniHTML(a) {
+  const st = a.mini ? ` style="background-image:url(${esc(a.mini)})"` : '';
+  return `<button class="fb-th${a.tipo === 'video' ? ' v' : ''}"${st} data-act="fb-ver" data-f="${esc(a.id)}" data-t="${esc(a.tipo)}" aria-label="${a.tipo === 'video' ? 'Vídeo' : 'Captura'}">` +
+    (a.tipo === 'video' ? `<span class="fb-play">${FB_ICO.play}</span><b>${fbDur(a.dur)}</b>` : '') + '</button>';
+}
+function fbNotaHTML(n, k) {
+  const ar = n.archivos || [];
+  return `<div class="fb-nota${n.hecho ? ' hecha' : ''}" data-id="${esc(n.id)}" style="--i:${Math.min(k, 8)}">
+    <div class="fb-nh"><span class="fb-when">${esc(fbFecha(n.ts))}</span>${fbTag(n.seccion)}</div>
+    <div class="fb-cuerpo"><button class="fb-ck" data-act="fb-hecho" data-id="${esc(n.id)}" aria-label="${n.hecho ? 'Volver a pendiente' : 'Marcar como hecha'}">${check('hoy', !!n.hecho, 24)}</button>
+      <div class="fb-txt">${esc(n.texto)}</div></div>
+    ${ar.length ? `<div class="fb-ths">${ar.map(fbMiniHTML).join('')}</div>` : ''}</div>`;
+}
+function pintarFbLista() {
+  const lista = S.fb.filter(n => FB.tab === 'todas' || (FB.tab === 'pend') === !n.hecho).sort((a, b) => b.ts - a.ts);
+  const vacio = FB.tab === 'pend' ? 'No tienes notas pendientes.' : FB.tab === 'hechas' ? 'Aún no hay notas hechas.' : 'Aún no has apuntado nada.';
+  const el = $('#fb-lista'); if (!el) return;
+  el.innerHTML = lista.length ? lista.map(fbNotaHTML).join('') : `<div class="list-note">${vacio}</div>`;
+}
+function pintarFeedback() {
+  const c = fbCuentas();
+  $('#fb-body').innerHTML = `<div style="font-size:30px;font-weight:600;padding:2px 20px 0">Feedback</div>
+    <div class="sub">Apunta lo que falla o lo que mejorarías mientras usas Posso.</div>
+    <div class="seg fb-seg">${[['pend', 'Pendientes', c.pend], ['hechas', 'Hechas', c.hechas], ['todas', 'Todas', c.todas]].map(([v, t, n]) =>
+      `<button class="${FB.tab === v ? 'on' : ''}" data-act="fb-tab" data-v="${v}">${t}<small>${n}</small></button>`).join('')}</div>
+    <div class="fb-lista" id="fb-lista"></div>`;
+  pintarFbLista();
+  if (S.cfg && !FB.cargando) fbTraer();
+}
+function fbContadores() {
+  const c = fbCuentas();
+  $$('#fb-body .fb-seg button').forEach(b => { const n = b.querySelector('small'); if (n) n.textContent = c[b.dataset.v === 'pend' ? 'pend' : b.dataset.v]; });
+}
+async function fbTraer() {
+  FB.cargando = true;
+  try {
+    const r = await api('fbListar', {}, 30000);
+    if (r && Array.isArray(r.notas)) {
+      // lo que está a medias en este móvil (sin guardar aún) no se toca; el resto lo manda tu Google
+      S.fb = r.notas; persist();
+      if (actual && actual.id === 's-fb') { pintarFbLista(); fbContadores(); }
+    }
+  } catch (e) {
+    if (/Acción desconocida/i.test(e.message)) toast('Falta actualizar el script de Google (Feedback.gs). Mira el PASO_A_PASO.');
+  } finally { FB.cargando = false; }
+}
+function fbCambiarTab(v) {
+  if (FB.tab === v) return;
+  FB.tab = v; vib();
+  $$('#fb-body .fb-seg button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  const el = $('#fb-lista');
+  if (reduceMotion() || !el) return pintarFbLista();
+  el.animate([{ opacity: 1 }, { opacity: 0, transform: 'translateY(4px)' }], { duration: 120, easing: 'ease-in' }).onfinish = () => { pintarFbLista(); };
+}
+function fbHecho(id, btn) {
+  const n = S.fb.find(x => x.id === id); if (!n) return;
+  n.hecho = !n.hecho; persist(); vib();
+  const ck = btn && btn.querySelector('.ck');
+  if (ck) { ck.classList.toggle('done', n.hecho); ck.classList.remove('pop'); void ck.getBoundingClientRect(); ck.classList.add('pop'); }
+  if (S.cfg) api('fbHecho', { id, hecho: n.hecho }, 20000).catch(() => toast('No he podido avisar a tu Google. Se queda marcado solo aquí.'));
+  const tarjeta = btn && btn.closest('.fb-nota');
+  fbContadores();
+  if (FB.tab !== 'todas' && tarjeta) {
+    if (reduceMotion()) return pintarFbLista();
+    tarjeta.style.maxHeight = tarjeta.offsetHeight + 'px'; void tarjeta.offsetHeight;
+    setTimeout(() => tarjeta.classList.add('sale'), 260);
+    setTimeout(pintarFbLista, 620);
+  } else if (tarjeta) tarjeta.classList.toggle('hecha', n.hecho);
+}
+
+// ---------- nota nueva ----------
+function fbAbrirNueva() {
+  if (!S.cfg) return toast('Para guardar notas conecta tu Google.');
+  FB.nueva = { texto: '', seccion: 'General', files: [], subiendo: false };
+  $('#sh-fb').innerHTML = `<div class="grab-zone"><div class="grab"></div></div>
+    <div class="fb-sh"><h2>Nota nueva</h2><button class="fb-x" data-act="fb-cerrar" aria-label="Cerrar">${FB_ICO.cerrar}</button></div>
+    <div class="cap">¿Qué has visto?</div>
+    <textarea class="fb-ta" id="fb-ta" rows="3" maxlength="1500" placeholder="Qué falla o qué mejorarías"></textarea>
+    <div class="cap fb-gap">Sección</div>
+    <div class="chips" id="fb-secs">${FB_SECCIONES.map(s => `<button class="csel${s === 'General' ? ' on' : ''}" data-act="fb-sec" data-v="${esc(s)}">${esc(s)}</button>`).join('')}</div>
+    <div class="cap fb-gap">Capturas y vídeos</div>
+    <div class="fb-ths" id="fb-files"></div>
+    <div class="fb-hint">${FB_ICO.info}<span id="fb-aviso">Los vídeos, de hasta 1 minuto. Si uno es demasiado grande te lo aviso, no se pierde en silencio.</span></div>
+    <button class="pill fb-guardar" id="fb-guardar" data-act="fb-guardar" disabled>Guardar nota</button>
+    <input type="file" id="fb-input" accept="image/*,video/*" multiple hidden>`;
+  $('#fb-input').addEventListener('change', e => { const fs = [...e.target.files]; e.target.value = ''; fs.forEach(fbAnadirArchivo); });
+  const ta = $('#fb-ta');
+  ta.addEventListener('input', () => { FB.nueva.texto = ta.value; fbRevisarGuardar(); });
+  ta.addEventListener('focus', () => setTimeout(() => { try { ta.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {} }, 320));
+  fbPintarFiles();
+  $('#sh-fb').scrollTop = 0; abrirHoja('sh-fb'); vib();
+}
+function fbCerrarNueva(rapido) {
+  if (FB.nueva && FB.nueva.subiendo) return toast('Estoy subiendo la nota, espera un momento.');
+  cerrarHoja('sh-fb', rapido); FB.nueva = null;
+}
+function fbRevisarGuardar() {
+  const b = $('#fb-guardar'); if (!b || !FB.nueva) return;
+  b.disabled = FB.nueva.subiendo || !FB.nueva.texto.trim();
+}
+function fbAviso(txt, mal) {
+  const a = $('#fb-aviso'); if (!a) return;
+  a.textContent = txt; a.parentElement.classList.toggle('mal', !!mal);
+}
+function fbPintarFiles() {
+  const el = $('#fb-files'); if (!el || !FB.nueva) return;
+  el.innerHTML = FB.nueva.files.map((f, k) => `<div class="fb-th${f.tipo === 'video' ? ' v' : ''}" style="${f.mini ? 'background-image:url(' + f.mini + ')' : ''}">` +
+    (f.tipo === 'video' ? `<span class="fb-play">${FB_ICO.play}</span><b>${fbDur(f.dur)}</b>` : '') +
+    `<button class="fb-rm" data-act="fb-quitar" data-k="${k}" aria-label="Quitar">${FB_ICO.x}</button></div>`).join('') +
+    `<label class="fb-th fb-add" for="fb-input">${FB_ICO.cam}<span>Foto o vídeo</span></label>`;
+}
+function fbMini(src, w, h) {   // recorte centrado, pequeño
+  const c = document.createElement('canvas'); c.width = 120; c.height = 160;
+  const g = c.getContext('2d'), k = Math.max(120 / w, 160 / h);
+  g.fillStyle = '#d3ebe7'; g.fillRect(0, 0, 120, 160);
+  g.drawImage(src, (120 - w * k) / 2, (160 - h * k) / 2, w * k, h * k);
+  return c.toDataURL('image/jpeg', .6);
+}
+async function fbPrepararImagen(file) {
+  const bmp = await (window.createImageBitmap ? createImageBitmap(file) : new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = ko; i.src = URL.createObjectURL(file); }));
+  const w = bmp.width, h = bmp.height, k = Math.min(1, 2400 / Math.max(w, h));
+  const png = /png/i.test(file.type) && file.size < 6 * 1048576 && k === 1;
+  let blob = file;
+  if (!png) {
+    const c = document.createElement('canvas'); c.width = Math.round(w * k); c.height = Math.round(h * k);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    blob = await new Promise(ok => c.toBlob(ok, 'image/jpeg', .86));
+    if (!blob) throw new Error('No he podido leer la imagen.');
+  }
+  return { tipo: 'foto', blob, mime: png ? 'image/png' : 'image/jpeg', ext: png ? 'png' : 'jpg', size: blob.size, mini: fbMini(bmp, w, h) };
+}
+function fbPrepararVideo(file) {
+  return new Promise((ok, ko) => {
+    const v = document.createElement('video'), url = URL.createObjectURL(file);
+    v.preload = 'metadata'; v.muted = true; v.playsInline = true;
+    let hecho = false;
+    const fin = (mini, dur) => { if (hecho) return; hecho = true; URL.revokeObjectURL(url);
+      const ext = /quicktime/i.test(file.type) || /\.mov$/i.test(file.name) ? 'mov' : /mp4/i.test(file.type) ? 'mp4' : (file.name.split('.').pop() || 'mov').toLowerCase().slice(0, 4);
+      ok({ tipo: 'video', blob: file, mime: file.type || 'video/quicktime', ext, size: file.size, dur, mini }); };
+    v.onerror = () => { if (!hecho) { hecho = true; URL.revokeObjectURL(url); ko(new Error('No he podido leer ese vídeo.')); } };
+    v.onloadedmetadata = () => {
+      const dur = v.duration || 0;
+      if (dur > FB_MAX_SEG) { hecho = true; URL.revokeObjectURL(url); return ko(new Error(`Ese vídeo dura ${fbDur(dur)} y el máximo es 1 minuto. Recórtalo y vuélvelo a añadir.`)); }
+      try { v.currentTime = Math.min(.2, dur / 2); } catch (e) { fin('', dur); }
+    };
+    v.onseeked = () => { let m = ''; try { m = fbMini(v, v.videoWidth || 120, v.videoHeight || 160); } catch (e) {} fin(m, v.duration || 0); };
+    setTimeout(() => { if (!hecho) fin('', v.duration || 0); }, 5000);
+    v.src = url; try { v.load(); } catch (e) {}
+  });
+}
+async function fbAnadirArchivo(file) {
+  if (!FB.nueva) return;
+  if (/^video\//.test(file.type) || /\.(mov|mp4|m4v)$/i.test(file.name)) {
+    if (file.size > FB_MAX_MB * 1048576) return fbAviso(`Ese vídeo pesa ${fbMB(file.size)} MB y el máximo es ${FB_MAX_MB} MB. Prueba con uno más corto o de menos calidad.`, true);
+  }
+  fbAviso('Preparando el archivo…');
+  try {
+    const f = /^video\//.test(file.type) || /\.(mov|mp4|m4v)$/i.test(file.name) ? await fbPrepararVideo(file) : await fbPrepararImagen(file);
+    if (!FB.nueva) return;
+    FB.nueva.files.push(f); fbPintarFiles();
+    const tot = FB.nueva.files.reduce((s, x) => s + x.size, 0);
+    fbAviso(`${FB.nueva.files.length} archivo${FB.nueva.files.length > 1 ? 's' : ''} · ${fbMB(tot)} MB. Los vídeos, de hasta 1 minuto.`);
+  } catch (e) { fbAviso(e.message || 'No he podido añadir ese archivo.', true); }
+}
+const fbLeer = blob => new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1] || ''); r.onerror = () => ko(new Error('No he podido leer el archivo.')); r.readAsDataURL(blob); });
+async function fbConReintento(fn, veces = 3) {
+  let ult;
+  for (let k = 0; k < veces; k++) { try { return await fn(); } catch (e) { ult = e; await wait(700 * (k + 1)); } }
+  throw ult;
+}
+async function fbSubir(f, nombre, avance) {
+  const ini = await fbConReintento(() => api('fbIniciar', { nombre, mime: f.mime, size: f.size }, 30000));
+  let desde = 0, id = null;
+  while (desde < f.size) {
+    const fin = Math.min(f.size, desde + FB_TROZO), data = await fbLeer(f.blob.slice(desde, fin));
+    const r = await fbConReintento(() => api('fbParte', { sid: ini.sid, desde, data }, 120000));
+    desde = fin; avance(desde / f.size);
+    if (r.listo) id = r.id;
+  }
+  if (!id) throw new Error('Google no ha confirmado el archivo.');
+  return id;
+}
+async function fbGuardar() {
+  const N = FB.nueva; if (!N || N.subiendo || !N.texto.trim()) return;
+  N.subiendo = true; fbRevisarGuardar();
+  const btn = $('#fb-guardar'); btn.classList.add('subiendo');
+  const hoy = new Date(), fec = isoDia(hoy), id = uid(), archivos = [];
+  const cuenta = { foto: 0, video: 0 };
+  try {
+    for (let k = 0; k < N.files.length; k++) {
+      const f = N.files[k]; cuenta[f.tipo]++;
+      const nombre = `${fec}_${id.slice(0, 6)}_${f.tipo === 'video' ? 'video' : 'captura'}_${cuenta[f.tipo]}.${f.ext}`;
+      btn.textContent = `Subiendo ${k + 1} de ${N.files.length}…`;
+      const fid = await fbSubir(f, nombre, p => { btn.textContent = `Subiendo ${k + 1} de ${N.files.length} · ${Math.round(p * 100)} %`; });
+      archivos.push({ id: fid, tipo: f.tipo, ext: f.ext, mime: f.mime, size: f.size, dur: f.dur || 0, mini: f.mini || '' });
+    }
+    btn.textContent = 'Guardando…';
+    const nota = { id, ts: Date.now(), seccion: N.seccion, texto: N.texto.trim(), hecho: false, archivos };
+    await fbConReintento(() => api('fbGuardar', { nota }, 30000));
+    S.fb.unshift(nota); persist();
+    N.subiendo = false; fbCerrarNueva();
+    if (FB.tab === 'hechas') { FB.tab = 'pend'; $$('#fb-body .fb-seg button').forEach(b => b.classList.toggle('on', b.dataset.v === 'pend')); }
+    pintarFbLista(); fbContadores();
+    const el = $('#fb-lista .fb-nota'); if (el && !reduceMotion()) el.animate([{ opacity: 0, transform: 'translateY(-10px) scale(.98)' }, { opacity: 1, transform: 'none' }], { duration: 480, easing: EASE });
+    toast('Nota guardada en tu Drive.');
+  } catch (e) {
+    N.subiendo = false; btn.classList.remove('subiendo'); btn.textContent = 'Guardar nota'; fbRevisarGuardar();
+    fbAviso('No se ha guardado: ' + (/Acción desconocida/i.test(e.message) ? 'falta actualizar el script de Google (Feedback.gs).' : e.message) + ' Pulsa otra vez para reintentar.', true);
+  }
+}
+
+// ---------- ver una captura ----------
+async function fbBajar(fileId, size, avance) {
+  const partes = []; let desde = 0;
+  while (desde < size) {
+    const hasta = Math.min(size, desde + FB_TROZO) - 1;
+    const r = await fbConReintento(() => api('fbArchivo', { id: fileId, desde, hasta }, 120000));
+    const bin = atob(r.data), u = new Uint8Array(bin.length);
+    for (let k = 0; k < bin.length; k++) u[k] = bin.charCodeAt(k);
+    partes.push(u); desde = hasta + 1; if (avance) avance(desde / size);
+  }
+  return partes;
+}
+async function fbVer(fileId, tipo) {
+  const n = S.fb.find(x => (x.archivos || []).some(a => a.id === fileId)), a = n && n.archivos.find(x => x.id === fileId);
+  if (!a) return;
+  if (tipo === 'video') return toast('Los vídeos los ves al exportar el zip o en tu Drive («Posso · Feedback»).');
+  const v = document.createElement('div'); v.className = 'visor';
+  v.innerHTML = '<div class="visor-in">Cargando…</div>';
+  $('#app').appendChild(v); requestAnimationFrame(() => v.classList.add('on'));
+  v.addEventListener('click', () => { v.classList.remove('on'); setTimeout(() => v.remove(), 300); });
+  try {
+    const partes = await fbBajar(fileId, a.size), url = URL.createObjectURL(new Blob(partes, { type: a.mime || 'image/jpeg' }));
+    v.innerHTML = `<img src="${url}" alt="">`;
+  } catch (e) { v.innerHTML = '<div class="visor-in">No puedo abrir la captura ahora.</div>'; }
+}
+
+// ---------- exportar ----------
+function fbSeleccion() {
+  return S.fb.filter(n => FB.exp.todas || !n.hecho).sort((a, b) => a.ts - b.ts);
+}
+function fbResumenExp() {
+  const sel = fbSeleccion(); let fo = 0, vi = 0, by = 0;
+  sel.forEach(n => (n.archivos || []).forEach(a => { a.tipo === 'video' ? vi++ : fo++; by += a.size || 0; }));
+  return { sel, fo, vi, by };
+}
+const fbLimpio = s => String(s).normalize('NFC').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/\s+/g, ' ').trim();
+function fbAbrirExportar() {
+  FB.exp = { todas: false, listo: null, ocupado: false };
+  $('#sh-fb').innerHTML = `<div class="grab-zone"><div class="grab"></div></div>
+    <div class="fb-sh"><h2>Exportar feedback</h2><button class="fb-x" data-act="fb-cerrar" aria-label="Cerrar">${FB_ICO.cerrar}</button></div>
+    <div class="seg"><button class="on" data-act="fb-exp-tipo" data-v="pend">Solo pendientes</button><button data-act="fb-exp-tipo" data-v="todas">Todas</button></div>
+    <div class="fb-cnt" id="fb-cnt"></div>
+    <div class="cap fb-gap">Qué lleva el zip</div>
+    <div class="fb-tree" id="fb-tree"></div>
+    <div class="fb-hint">${FB_ICO.info}<span>El zip se crea en tu iPhone, sin servicios externos. Las notas y los archivos están en tu Drive, en la carpeta «Posso · Feedback».</span></div>
+    <button class="pill fb-guardar" id="fb-descargar" data-act="fb-descargar">Descargar zip</button>`;
+  fbPintarExp(); abrirHoja('sh-fb'); vib();
+}
+function fbPintarExp() {
+  const { sel, fo, vi, by } = fbResumenExp();
+  $('#fb-cnt').innerHTML = [[sel.length, 'notas'], [fo, 'capturas'], [vi, 'vídeos'], [fbMB(by), 'MB']].map(([n, t]) => `<div><b>${n}</b><span>${t}</span></div>`).join('');
+  const hoy = isoDia(new Date());
+  const filas = sel.slice(0, 3).map((n, k) => {
+    const ar = n.archivos || [], c = { foto: 0, video: 0 };
+    const nombres = ar.map(a => (a.tipo === 'video' ? 'video_' : 'captura_') + (++c[a.tipo]) + '.' + (a.ext || 'jpg'));
+    return `<div class="i"><b>${pad(k + 1)}_${esc(fbLimpio(n.seccion))}</b></div>` + (nombres.length ? `<div class="j">${esc(nombres.slice(0, 3).join(' · '))}${nombres.length > 3 ? ' …' : ''}</div>` : '');
+  }).join('');
+  $('#fb-tree').innerHTML = sel.length ? `<b>Posso_feedback_${hoy}</b><div class="i">feedback.txt</div>${filas}${sel.length > 3 ? '<div class="i" style="color:var(--ink3)">…</div>' : ''}` :
+    '<span style="color:var(--ink3)">No hay notas para exportar.</span>';
+  const b = $('#fb-descargar'); if (b && !FB.exp.ocupado) { b.disabled = !sel.length; b.textContent = 'Descargar zip'; FB.exp.listo = null; }
+}
+function fbExpTipo(el) {
+  if (FB.exp.ocupado) return;
+  FB.exp.todas = el.dataset.v === 'todas'; vib();
+  $$('#sh-fb .seg button').forEach(b => b.classList.toggle('on', b === el));
+  fbPintarExp();
+}
+// zip «sin comprimir»: carpeta, archivos y listo (no hace falta ninguna librería)
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crcSigue(crc, u8) { let c = crc ^ 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function crcDe(partes) { let c = 0; partes.forEach(p => { c = crcSigue(c, p); }); return c >>> 0; }
+function crearZip(archivos) {   // [{ nombre, partes:[Uint8Array], tam }]
+  const enc = new TextEncoder(), out = [], central = [], d = new Date();
+  const dosT = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), dosF = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  let pos = 0;
+  archivos.forEach(a => {
+    const nom = enc.encode(a.nombre), crc = crcDe(a.partes), h = new DataView(new ArrayBuffer(30));
+    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(8, 0, true);
+    h.setUint16(10, dosT, true); h.setUint16(12, dosF, true); h.setUint32(14, crc, true); h.setUint32(18, a.tam, true); h.setUint32(22, a.tam, true);
+    h.setUint16(26, nom.length, true); h.setUint16(28, 0, true);
+    out.push(h.buffer, nom, ...a.partes);
+    const c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(10, 0, true);
+    c.setUint16(12, dosT, true); c.setUint16(14, dosF, true); c.setUint32(16, crc, true); c.setUint32(20, a.tam, true); c.setUint32(24, a.tam, true);
+    c.setUint16(28, nom.length, true); c.setUint32(42, pos, true);
+    central.push(c.buffer, nom);
+    pos += 30 + nom.length + a.tam;
+  });
+  const tamC = central.reduce((s, x) => s + (x.byteLength || x.length), 0), f = new DataView(new ArrayBuffer(22));
+  f.setUint32(0, 0x06054b50, true); f.setUint16(8, archivos.length, true); f.setUint16(10, archivos.length, true); f.setUint32(12, tamC, true); f.setUint32(16, pos, true);
+  return new Blob([...out, ...central, f.buffer], { type: 'application/zip' });
+}
+function fbTextoZip(sel, nombresDe) {
+  const L = ['POSSO · FEEDBACK', 'Exportado el ' + new Date().toLocaleString('es-ES'), sel.length + ' nota' + (sel.length === 1 ? '' : 's'), ''];
+  sel.forEach((n, k) => {
+    L.push('────────────────────────', 'NOTA ' + (k + 1), 'Fecha: ' + new Date(n.ts).toLocaleString('es-ES'), 'Sección: ' + n.seccion,
+      'Estado: ' + (n.hecho ? 'Hecha' : 'Pendiente'), 'Texto: ' + n.texto, 'Archivos: ' + (nombresDe[k].length ? nombresDe[k].join(', ') : 'ninguno'), '');
+  });
+  return L.join('\n');
+}
+async function fbDescargar() {
+  const b = $('#fb-descargar'); if (!b || FB.exp.ocupado) return;
+  if (FB.exp.listo) return fbEntregar();
+  const sel = fbSeleccion(); if (!sel.length) return;
+  FB.exp.ocupado = true; b.disabled = true;
+  const carpeta = 'Posso_feedback_' + isoDia(new Date());
+  const total = sel.reduce((s, n) => s + (n.archivos || []).reduce((t, a) => t + (a.size || 0), 0), 0);
+  let hecho = 0; const files = [], nombresDe = [];
+  try {
+    for (let k = 0; k < sel.length; k++) {
+      const n = sel[k], dir = `${carpeta}/${pad(k + 1)}_${fbLimpio(n.seccion)}`, c = { foto: 0, video: 0 }, nombres = [];
+      for (const a of (n.archivos || [])) {
+        const nom = (a.tipo === 'video' ? 'video_' : 'captura_') + (++c[a.tipo]) + '.' + (a.ext || (a.tipo === 'video' ? 'mov' : 'jpg'));
+        const partes = await fbBajar(a.id, a.size, p => { b.textContent = `Preparando… ${Math.round(((hecho + p * (a.size || 0)) / Math.max(1, total)) * 100)} %`; });
+        hecho += a.size || 0;
+        files.push({ nombre: `${dir}/${nom}`, partes, tam: partes.reduce((s, x) => s + x.length, 0) });
+        nombres.push(`${pad(k + 1)}_${fbLimpio(n.seccion)}/${nom}`);
+      }
+      nombresDe.push(nombres);
+    }
+    const txt = new TextEncoder().encode(fbTextoZip(sel, nombresDe));
+    files.unshift({ nombre: `${carpeta}/feedback.txt`, partes: [txt], tam: txt.length });
+    const blob = crearZip(files);
+    FB.exp.listo = { blob, nombre: carpeta + '.zip' };
+    FB.exp.ocupado = false; b.disabled = false; b.textContent = `Guardar zip · ${fbMB(blob.size)} MB`;
+    toast('Zip listo. Pulsa «Guardar zip».');
+  } catch (e) {
+    FB.exp.ocupado = false; b.disabled = false; b.textContent = 'Descargar zip';
+    toast('No he podido preparar el zip: ' + e.message);
+  }
+}
+async function fbEntregar() {
+  const z = FB.exp.listo; if (!z) return;
+  const file = new File([z.blob], z.nombre, { type: 'application/zip' });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: z.nombre }); return; }
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  const url = URL.createObjectURL(z.blob), a = document.createElement('a');
+  a.href = url; a.download = z.nombre; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 // ---------- Olvidar: a los 7 días, pregunta antes de borrar ----------
